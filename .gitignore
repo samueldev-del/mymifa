@@ -1,0 +1,11 @@
+# macOS
+.DS_Store
+
+# Dépendances
+node_modules/
+
+# Variables d'environnement — jamais versionnées.
+# Les fichiers .env.example documentent les clés attendues.
+.env
+.env.local
+.env.*.local
