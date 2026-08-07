@@ -26,6 +26,7 @@ export default function Home() {
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [recherche, setRecherche] = useState('');
+  const [isSyncing, setIsSyncing] = useState(false);
 
   const rafraichir = useCallback(async () => {
     try {
@@ -51,6 +52,24 @@ export default function Home() {
 
     load();
   }, [rafraichir]);
+
+  /** Déclenche la lecture IMAP à la demande, sans attendre le planificateur. */
+  const synchroniserEmails = async () => {
+    setIsSyncing(true);
+    try {
+      const r = await apiFetch<{ mises_a_jour: number }>('/emails/sync', { method: 'POST' });
+      if (r.mises_a_jour > 0) {
+        toast.success(t('dashboard.syncResultat', { n: r.mises_a_jour }));
+        await rafraichir();
+      } else {
+        toast.info(t('dashboard.syncAucun'));
+      }
+    } catch (error: unknown) {
+      toast.error(getErrorMessage(error, t('commun.erreurReseau')));
+    } finally {
+      setIsSyncing(false);
+    }
+  };
 
   const filtrees = useMemo(() => {
     const terme = recherche.trim().toLowerCase();
@@ -224,7 +243,19 @@ export default function Home() {
                 )}
               </Panneau>
 
-              <Panneau titre={t('dashboard.relances')}>
+              <Panneau
+                titre={t('dashboard.relances')}
+                action={
+                  <button
+                    type="button"
+                    onClick={synchroniserEmails}
+                    disabled={isSyncing}
+                    className="shrink-0 rounded-lg border border-littoral-light/40 px-2.5 py-1 text-xs font-medium text-littoral-dark/70 transition hover:border-littoral-dark/30 hover:text-littoral-dark disabled:opacity-50"
+                  >
+                    {isSyncing ? t('dashboard.syncEnCours') : t('dashboard.syncEmails')}
+                  </button>
+                }
+              >
                 {!dashboard?.relances_en_attente.length ? (
                   <p className="rounded-xl border border-dashed border-littoral-light/40 px-4 py-6 text-center text-sm text-littoral-dark/55">
                     {t('dashboard.aucuneRelance')}

@@ -1,0 +1,49 @@
+name: Synchronisation des emails
+
+# Déclenche la lecture IMAP côté API pour mettre à jour les statuts de
+# candidature. GitHub Actions plutôt qu'un cron Vercel : le plan Hobby de
+# Vercel limite les crons à une exécution par jour, trop lent pour repérer
+# une réponse de recruteur.
+on:
+  schedule:
+    # Toutes les 15 minutes. GitHub applique parfois du retard sur les crons
+    # de dépôts peu actifs ; la synchronisation étant idempotente, un
+    # décalage est sans conséquence.
+    - cron: '*/15 * * * *'
+  # Permet de lancer la synchronisation à la demande depuis l'onglet Actions.
+  workflow_dispatch:
+
+concurrency:
+  # Deux synchronisations simultanées liraient la même boîte pour rien.
+  group: sync-emails
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Appeler l'API de synchronisation
+        env:
+          API_URL: ${{ secrets.API_URL }}
+          EMAIL_WEBHOOK_SECRET: ${{ secrets.EMAIL_WEBHOOK_SECRET }}
+        run: |
+          set -euo pipefail
+
+          reponse=$(mktemp)
+          code=$(curl -sS --max-time 120 \
+            -o "$reponse" -w '%{http_code}' \
+            -X POST "$API_URL/api/emails/sync" \
+            -H "x-webhook-secret: $EMAIL_WEBHOOK_SECRET" \
+            -H 'Content-Type: application/json')
+
+          echo "HTTP $code"
+          # jq est préinstallé sur ubuntu-latest ; en cas de réponse non-JSON
+          # (page d'erreur de la plateforme), on affiche le corps brut.
+          jq . "$reponse" 2>/dev/null || cat "$reponse"
+
+          if [ "$code" != "200" ]; then
+            echo "::error::La synchronisation a échoué (HTTP $code)"
+            exit 1
+          fi
