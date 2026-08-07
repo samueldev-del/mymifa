@@ -16,3 +16,27 @@ export { IMPORTANCE_META } from './ats';
 
 export type { Profil } from './profil';
 export { EMPTY_PROFIL } from './profil';
+
+export type {
+  Contact,
+  DashboardData,
+  Formation,
+  FormationStatut,
+  Interview,
+  InterviewModalite,
+  InterviewType,
+  Lacune,
+  PreparationIA,
+  QuestionCategorie,
+  QuestionPrepa,
+  Relance,
+  ReponseStar,
+} from './carriere';
+export {
+  CATEGORIE_STYLE,
+  FORMATION_STATUTS,
+  FORMATION_STATUT_STYLE,
+  INTERVIEW_MODALITES,
+  INTERVIEW_TYPES,
+  QUESTION_CATEGORIES,
+} from './carriere';

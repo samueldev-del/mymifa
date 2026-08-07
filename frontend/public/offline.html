@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mymifa — Offline</title>
+    <style>
+      :root {
+        color-scheme: light;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #fbfbf9;
+        color: #3e3228;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        padding: 1.5rem;
+      }
+      .boite {
+        max-width: 26rem;
+        text-align: center;
+      }
+      .logo {
+        width: 3.5rem;
+        height: 3.5rem;
+        margin: 0 auto 1.5rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 1rem;
+        background: #b8432c;
+        color: #fff;
+        font-size: 1.5rem;
+        font-weight: 700;
+      }
+      h1 {
+        font-size: 1.25rem;
+        margin: 0 0 0.5rem;
+      }
+      p {
+        margin: 0;
+        opacity: 0.7;
+        line-height: 1.6;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="boite">
+      <div class="logo">M</div>
+      <h1>Keine Verbindung</h1>
+      <p>
+        Mymifa braucht eine Internetverbindung, um Ihre Bewerbungen zu laden.
+        Sobald Sie wieder online sind, aktualisiert sich die Seite von selbst.
+      </p>
+    </div>
+    <script>
+      // Recharge dès que la connexion revient.
+      addEventListener('online', () => location.reload());
+    </script>
+  </body>
+</html>

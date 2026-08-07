@@ -4,9 +4,11 @@ import { Suspense, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { toast } from 'sonner';
 import { apiFetch, getErrorMessage } from '@/lib/api';
+import { useLangue } from '@/i18n';
 import { setToken } from '@/lib/auth';
 
 function LoginForm() {
+  const { t } = useLangue();
   const router = useRouter();
   const searchParams = useSearchParams();
   const [password, setPassword] = useState('');
@@ -32,7 +34,7 @@ function LoginForm() {
       router.replace(destination);
     } catch (error: unknown) {
       setPassword('');
-      toast.error(getErrorMessage(error, 'Connexion impossible.'));
+      toast.error(getErrorMessage(error, t('auth.echec')));
     } finally {
       setIsSubmitting(false);
     }
@@ -46,15 +48,15 @@ function LoginForm() {
             <span className="mb-4 flex size-14 items-center justify-center rounded-2xl bg-laterite text-2xl font-bold text-white">
               M
             </span>
-            <h1 className="text-2xl font-bold text-littoral-dark">Mymifa</h1>
+            <h1 className="text-2xl font-bold text-littoral-dark">{t('auth.titre')}</h1>
             <p className="mt-1 text-sm text-littoral-dark/70">
-              Cet espace est privé. Saisissez votre mot de passe pour continuer.
+              {t('auth.sousTitre')}
             </p>
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <label className="block space-y-2">
-              <span className="block text-sm font-medium text-littoral-dark">Mot de passe</span>
+              <span className="block text-sm font-medium text-littoral-dark">{t('auth.motDePasse')}</span>
               <input
                 type="password"
                 name="password"
@@ -72,7 +74,7 @@ function LoginForm() {
               disabled={isSubmitting || !password}
               className="w-full rounded-2xl bg-laterite px-5 py-3 font-semibold text-white transition hover:bg-laterite-hover disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {isSubmitting ? 'Connexion...' : 'Se connecter'}
+              {isSubmitting ? t('auth.connexionEnCours') : t('auth.connexion')}
             </button>
           </form>
         </div>

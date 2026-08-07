@@ -2,8 +2,8 @@ interface ScoreRingProps {
   /** Score 0-100. */
   score: number;
   size?: number;
-  /** Affiche le libellé "compatibilité" sous l'anneau. */
-  withLabel?: boolean;
+  /** Libellé affiché sous l'anneau. Traduit par l'appelant. */
+  label?: string;
 }
 
 function couleur(score: number): string {
@@ -13,7 +13,7 @@ function couleur(score: number): string {
 }
 
 /** Anneau de progression : lit le score d'un coup d'œil. */
-export default function ScoreRing({ score, size = 96, withLabel = false }: ScoreRingProps) {
+export default function ScoreRing({ score, size = 96, label }: ScoreRingProps) {
   const borne = Math.max(0, Math.min(100, score));
   const rayon = size / 2 - 4;
   const circonference = 2 * Math.PI * rayon;
@@ -52,9 +52,9 @@ export default function ScoreRing({ score, size = 96, withLabel = false }: Score
           </span>
         </div>
       </div>
-      {withLabel && (
+      {label && (
         <span className="text-xs font-medium uppercase tracking-wide text-littoral-dark/60">
-          Compatibilité
+          {label}
         </span>
       )}
     </div>

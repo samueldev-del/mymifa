@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { apiFetch, getErrorMessage } from '@/lib/api';
+import { useLangue } from '@/i18n';
 import type { CvItem } from '@/types';
 
 const INPUT_CLASS =
@@ -14,6 +15,7 @@ const INPUT_CLASS =
  * limitée générées par le backend.
  */
 export default function CvLibrary() {
+  const { t, formatLocale } = useLangue();
   const [cvs, setCvs] = useState<CvItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isUploading, setIsUploading] = useState(false);
@@ -25,11 +27,11 @@ export default function CvLibrary() {
       const data = await apiFetch<CvItem[]>('/cv');
       setCvs(data || []);
     } catch (error: unknown) {
-      toast.error(getErrorMessage(error, 'Impossible de charger la bibliothèque de CV.'));
+      toast.error(getErrorMessage(error, t('commun.erreurReseau')));
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     const load = async () => {
@@ -54,17 +56,17 @@ export default function CvLibrary() {
       setFichier(null);
       setLibelle('');
       e.currentTarget.reset();
-      toast.success('CV ajouté à la bibliothèque.');
+      toast.success(t('profil.bibliotheque.ajoute'));
       await fetchCvs();
     } catch (error: unknown) {
-      toast.error(getErrorMessage(error, "Impossible d'ajouter le CV."));
+      toast.error(getErrorMessage(error, t('commun.erreurReseau')));
     } finally {
       setIsUploading(false);
     }
   };
 
   const handleRename = async (cv: CvItem) => {
-    const nouveau = window.prompt('Nouveau libellé du CV :', cv.libelle || '');
+    const nouveau = window.prompt(t('profil.bibliotheque.nouveauLibelle'), cv.libelle || '');
     if (!nouveau || !nouveau.trim() || nouveau.trim() === cv.libelle) return;
 
     try {
@@ -72,32 +74,31 @@ export default function CvLibrary() {
         method: 'PUT',
         body: JSON.stringify({ libelle: nouveau.trim() }),
       });
-      toast.success('CV renommé.');
+      toast.success(t('profil.bibliotheque.renomme'));
       await fetchCvs();
     } catch (error: unknown) {
-      toast.error(getErrorMessage(error, 'Impossible de renommer le CV.'));
+      toast.error(getErrorMessage(error, t('commun.erreurReseau')));
     }
   };
 
   const handleDelete = async (cv: CvItem) => {
-    if (!window.confirm(`Supprimer « ${cv.libelle || 'ce CV'} » de la bibliothèque ?`)) return;
+    if (!window.confirm(t('profil.bibliotheque.supprimerConfirm', { nom: cv.libelle || '' }))) return;
 
     try {
       await apiFetch<{ id: string }>(`/cv/${cv.id}`, { method: 'DELETE' });
-      toast.success('CV supprimé.');
+      toast.success(t('profil.bibliotheque.supprime'));
       await fetchCvs();
     } catch (error: unknown) {
-      toast.error(getErrorMessage(error, 'Impossible de supprimer le CV.'));
+      toast.error(getErrorMessage(error, t('commun.erreurReseau')));
     }
   };
 
   return (
     <section className="animate-fade-in delay-100 rounded-3xl border border-littoral-light/30 bg-white/80 p-6 shadow-sm backdrop-blur md:p-8">
       <div className="mb-6 border-b border-littoral-light/20 pb-5">
-        <h2 className="text-xl font-bold text-littoral-dark">Bibliothèque de CV</h2>
+        <h2 className="text-xl font-bold text-littoral-dark">{t('profil.bibliotheque.titre')}</h2>
         <p className="mt-1 text-sm text-littoral-dark/70">
-          Vos CV de base, réutilisables d&apos;une candidature à l&apos;autre. Les fichiers sont
-          stockés en privé — les liens de téléchargement expirent après 15 minutes.
+          {t('profil.bibliotheque.sousTitre')}
         </p>
       </div>
 
@@ -107,7 +108,7 @@ export default function CvLibrary() {
       >
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="space-y-1.5">
-            <span className="block text-sm font-medium text-littoral-dark">Fichier</span>
+            <span className="block text-sm font-medium text-littoral-dark">{t('profil.bibliotheque.fichier')}</span>
             <input
               type="file"
               accept=".pdf,.doc,.docx"
@@ -117,12 +118,12 @@ export default function CvLibrary() {
           </label>
 
           <label className="space-y-1.5">
-            <span className="block text-sm font-medium text-littoral-dark">Libellé</span>
+            <span className="block text-sm font-medium text-littoral-dark">{t('profil.bibliotheque.libelle')}</span>
             <input
               type="text"
               value={libelle}
               onChange={(e) => setLibelle(e.target.value)}
-              placeholder="CV Français, CV Anglais…"
+              placeholder={t('profil.bibliotheque.libellePlaceholder')}
               className={INPUT_CLASS}
             />
           </label>
@@ -133,9 +134,9 @@ export default function CvLibrary() {
           disabled={!fichier || isUploading}
           className="rounded-xl bg-littoral-dark px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-black disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {isUploading ? 'Téléversement...' : 'Ajouter à la bibliothèque'}
+          {isUploading ? t('commun.enregistrement') : t('profil.bibliotheque.ajouter')}
         </button>
-        <p className="text-xs text-littoral-dark/50">PDF, DOC ou DOCX — 10 Mo maximum.</p>
+        <p className="text-xs text-littoral-dark/50">{t('documents.contraintes')}</p>
       </form>
 
       {isLoading ? (
@@ -145,7 +146,7 @@ export default function CvLibrary() {
         </div>
       ) : cvs.length === 0 ? (
         <p className="rounded-xl border border-dashed border-littoral-light/40 px-4 py-10 text-center text-sm text-littoral-dark/60">
-          Aucun CV enregistré. Ajoutez-en un pour le réutiliser dans vos candidatures.
+          {t('profil.bibliotheque.aucun')}
         </p>
       ) : (
         <ul className="space-y-2">
@@ -165,7 +166,7 @@ export default function CvLibrary() {
                 </a>
                 {cv.created_at && (
                   <span className="text-xs text-littoral-dark/50">
-                    Ajouté le {new Date(cv.created_at).toLocaleDateString('fr-FR')}
+                    {t('profil.bibliotheque.ajouteLe', { date: new Date(cv.created_at).toLocaleDateString(formatLocale) })}
                   </span>
                 )}
               </div>
@@ -176,14 +177,14 @@ export default function CvLibrary() {
                   onClick={() => handleRename(cv)}
                   className="rounded-lg px-2.5 py-1.5 text-sm text-littoral-dark/60 transition hover:bg-coton-dark hover:text-littoral-dark"
                 >
-                  Renommer
+                  {t('profil.bibliotheque.renommer')}
                 </button>
                 <button
                   type="button"
                   onClick={() => handleDelete(cv)}
                   className="rounded-lg px-2.5 py-1.5 text-sm text-littoral-dark/40 transition hover:bg-laterite/10 hover:text-laterite"
                 >
-                  Supprimer
+                  {t('commun.supprimer')}
                 </button>
               </div>
             </li>

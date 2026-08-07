@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { toast } from 'sonner';
 import Modal from './Modal';
 import { apiFetch, getErrorMessage } from '@/lib/api';
+import { useLangue } from '@/i18n';
 import type { Application } from '@/types';
 
 interface ModalProps {
@@ -23,6 +24,7 @@ const INPUT_CLASS =
   'w-full rounded-xl border border-littoral-light/40 bg-white px-3.5 py-2.5 text-sm outline-none transition focus:border-littoral-dark';
 
 export default function AddApplicationModal({ isOpen, onClose, onSuccess }: ModalProps) {
+  const { t } = useLangue();
   const [formData, setFormData] = useState(EMPTY_FORM);
   const [loading, setLoading] = useState(false);
 
@@ -39,11 +41,11 @@ export default function AddApplicationModal({ isOpen, onClose, onSuccess }: Moda
       });
 
       setFormData(EMPTY_FORM);
-      toast.success('Candidature créée avec succès.');
+      toast.success(t('candidature.creee'));
       onSuccess();
       onClose();
     } catch (error: unknown) {
-      toast.error(getErrorMessage(error, 'Impossible de sauvegarder la candidature.'));
+      toast.error(getErrorMessage(error, t('commun.erreurReseau')));
     } finally {
       setLoading(false);
     }
@@ -53,12 +55,12 @@ export default function AddApplicationModal({ isOpen, onClose, onSuccess }: Moda
     <Modal onClose={onClose} labelledBy="titre-nouvelle-candidature" className="max-w-2xl">
       <div className="flex items-center justify-between border-b border-littoral-light/30 px-6 py-4">
         <h2 id="titre-nouvelle-candidature" className="text-xl font-bold text-littoral-dark">
-          Nouvelle candidature
+          {t('candidature.nouvelle')}
         </h2>
         <button
           type="button"
           onClick={onClose}
-          aria-label="Fermer"
+          aria-label={t('commun.fermer')}
           className="rounded-lg px-2 py-1 text-xl leading-none text-littoral-dark/50 transition hover:bg-coton-dark hover:text-littoral-dark"
         >
           ×
@@ -69,7 +71,7 @@ export default function AddApplicationModal({ isOpen, onClose, onSuccess }: Moda
         <div className="grid gap-4 sm:grid-cols-2">
           <label className="space-y-1.5">
             <span className="block text-sm font-medium text-littoral-dark">
-              Nom de l&apos;entreprise *
+              {t('candidature.entreprise')} *
             </span>
             <input
               type="text"
@@ -82,7 +84,7 @@ export default function AddApplicationModal({ isOpen, onClose, onSuccess }: Moda
           </label>
 
           <label className="space-y-1.5">
-            <span className="block text-sm font-medium text-littoral-dark">Titre du poste *</span>
+            <span className="block text-sm font-medium text-littoral-dark">{t('candidature.poste')} *</span>
             <input
               type="text"
               required
@@ -94,7 +96,7 @@ export default function AddApplicationModal({ isOpen, onClose, onSuccess }: Moda
         </div>
 
         <label className="block space-y-1.5">
-          <span className="block text-sm font-medium text-littoral-dark">URL de l&apos;offre</span>
+          <span className="block text-sm font-medium text-littoral-dark">{t('candidature.urlOffre')}</span>
           <input
             type="url"
             value={formData.url_offre}
@@ -106,17 +108,17 @@ export default function AddApplicationModal({ isOpen, onClose, onSuccess }: Moda
 
         <label className="block space-y-1.5">
           <span className="block text-sm font-medium text-littoral-dark">
-            Description de l&apos;offre
+            {t('candidature.description')}
           </span>
           <textarea
             rows={6}
             value={formData.description_offre}
             onChange={(e) => setFormData({ ...formData, description_offre: e.target.value })}
-            placeholder="Collez ici le contenu de l'annonce…"
+            placeholder={t('candidature.descriptionPlaceholder')}
             className={INPUT_CLASS}
           />
           <span className="block text-xs text-littoral-dark/50">
-            Alimente la génération de lettre et l&apos;analyse ATS.
+            {t('candidature.descriptionAide')}
           </span>
         </label>
 
@@ -126,14 +128,14 @@ export default function AddApplicationModal({ isOpen, onClose, onSuccess }: Moda
             onClick={onClose}
             className="rounded-xl border border-littoral-dark/20 px-4 py-2.5 text-sm font-medium text-littoral-dark transition-colors hover:bg-coton-dark"
           >
-            Annuler
+            {t('commun.annuler')}
           </button>
           <button
             type="submit"
             disabled={loading}
             className="rounded-xl bg-laterite px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-laterite-hover disabled:opacity-50"
           >
-            {loading ? 'Enregistrement...' : 'Créer la candidature'}
+            {loading ? t('commun.enregistrement') : t('candidature.creer')}
           </button>
         </div>
       </form>

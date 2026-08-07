@@ -13,6 +13,7 @@ const cvRoutes = require('./routes/cvRoutes');
 const aiRoutes = require('./routes/aiRoutes');
 const profilRoutes = require('./routes/profilRoutes');
 const emailRoutes = require('./routes/emailRoutes');
+const carriereRoutes = require('./routes/carriereRoutes');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -65,6 +66,13 @@ app.use('/api/documents', documentRoutes);
 app.use('/api/cv', cvRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/profil', profilRoutes);
+
+// Modules de gestion de carrière.
+app.use('/api/dashboard', carriereRoutes.dashboard);
+app.use('/api/formations', carriereRoutes.formations);
+app.use('/api/contacts', carriereRoutes.contacts);
+app.use('/api/relances', carriereRoutes.relances);
+app.use('/api/interviews', carriereRoutes.interviews);
 
 app.use((req, res) => sendError(res, 404, 'NOT_FOUND', 'Route introuvable.'));
 

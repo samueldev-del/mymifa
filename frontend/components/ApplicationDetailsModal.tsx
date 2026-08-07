@@ -5,9 +5,9 @@ import { toast } from 'sonner';
 import Modal from './Modal';
 import ScoreRing from './ScoreRing';
 import { apiFetch, getErrorMessage } from '@/lib/api';
+import { useLangue } from '@/i18n';
 import {
   DOCUMENT_TYPES,
-  DOCUMENT_TYPE_LABELS,
   IMPORTANCE_META,
   STATUT_META,
   STATUT_VALUES,
@@ -25,10 +25,10 @@ interface DetailsModalProps {
 }
 
 const ONGLETS = [
-  { id: 'informations', label: 'Informations' },
-  { id: 'documents', label: 'Documents' },
-  { id: 'lettre', label: 'Lettre IA' },
-  { id: 'ats', label: 'Analyse ATS' },
+  { id: 'informations', cle: 'onglets.informations' },
+  { id: 'documents', cle: 'onglets.documents' },
+  { id: 'lettre', cle: 'onglets.lettre' },
+  { id: 'ats', cle: 'onglets.ats' },
 ] as const;
 
 type OngletId = (typeof ONGLETS)[number]['id'];
@@ -47,6 +47,7 @@ export default function ApplicationDetailsModal({
   application,
   onUpdated,
 }: DetailsModalProps) {
+  const { t, formatLocale } = useLangue();
   const [onglet, setOnglet] = useState<OngletId>('informations');
 
   const [editForm, setEditForm] = useState(() => ({
@@ -82,11 +83,11 @@ export default function ApplicationDetailsModal({
       const data = await apiFetch<DocumentItem[]>(`/applications/${applicationId}/documents`);
       setDocuments(data || []);
     } catch (error: unknown) {
-      toast.error(getErrorMessage(error, 'Erreur lors du chargement des documents.'));
+      toast.error(getErrorMessage(error, t('commun.erreurReseau')));
     } finally {
       setDocsLoading(false);
     }
-  }, [applicationId]);
+  }, [applicationId, t]);
 
   const loadAnalyse = useCallback(async () => {
     try {
@@ -120,10 +121,10 @@ export default function ApplicationDetailsModal({
         body: JSON.stringify(editForm),
       });
 
-      toast.success('Candidature mise à jour.');
+      toast.success(t('candidature.misAJour'));
       onUpdated();
     } catch (error: unknown) {
-      toast.error(getErrorMessage(error, 'Erreur lors de la mise à jour.'));
+      toast.error(getErrorMessage(error, t('commun.erreurReseau')));
     } finally {
       setIsSaving(false);
     }
@@ -139,25 +140,25 @@ export default function ApplicationDetailsModal({
         method: 'PUT',
         body: JSON.stringify({ statut }),
       });
-      toast.success(`Statut : ${STATUT_META[statut].label}`);
+      toast.success(t('candidature.statutChange', { statut: t(`statut.${statut}`) }));
       onUpdated();
     } catch (error: unknown) {
       setEditForm((prev) => ({ ...prev, statut: precedent }));
-      toast.error(getErrorMessage(error, 'Impossible de changer le statut.'));
+      toast.error(getErrorMessage(error, t('commun.erreurReseau')));
     }
   };
 
   const handleDelete = async () => {
-    if (!window.confirm('Supprimer cette candidature ? Cette action est irréversible.')) return;
+    if (!window.confirm(t('candidature.supprimerConfirm'))) return;
 
     setIsDeleting(true);
     try {
       await apiFetch<{ id: string }>(`/applications/${applicationId}`, { method: 'DELETE' });
-      toast.success('Candidature supprimée.');
+      toast.success(t('candidature.supprimee'));
       onUpdated();
       onClose();
     } catch (error: unknown) {
-      toast.error(getErrorMessage(error, 'Erreur lors de la suppression.'));
+      toast.error(getErrorMessage(error, t('commun.erreurReseau')));
       setIsDeleting(false);
     }
   };
@@ -177,24 +178,24 @@ export default function ApplicationDetailsModal({
       await apiFetch<DocumentItem>('/documents/upload', { method: 'POST', body: formData });
       setSelectedFile(null);
       (e.target as HTMLFormElement).reset();
-      toast.success('Document téléversé.');
+      toast.success(t('documents.televerse'));
       await loadDocuments();
     } catch (error: unknown) {
-      toast.error(getErrorMessage(error, 'Impossible de téléverser le document.'));
+      toast.error(getErrorMessage(error, t('commun.erreurReseau')));
     } finally {
       setIsUploading(false);
     }
   };
 
   const handleDeleteDocument = async (id: string) => {
-    if (!window.confirm('Supprimer ce document ?')) return;
+    if (!window.confirm(t('documents.supprimerConfirm'))) return;
 
     try {
       await apiFetch<{ id: string }>(`/documents/${id}`, { method: 'DELETE' });
-      toast.success('Document supprimé.');
+      toast.success(t('documents.supprime'));
       await loadDocuments();
     } catch (error: unknown) {
-      toast.error(getErrorMessage(error, 'Erreur lors de la suppression du document.'));
+      toast.error(getErrorMessage(error, t('commun.erreurReseau')));
     }
   };
 
@@ -212,7 +213,7 @@ export default function ApplicationDetailsModal({
       });
       setGeneratedLetter(data?.letter || '');
     } catch (error: unknown) {
-      toast.error(getErrorMessage(error, 'Impossible de générer la lettre.'));
+      toast.error(getErrorMessage(error, t('commun.erreurReseau')));
     } finally {
       setIsGenerating(false);
     }
@@ -228,10 +229,10 @@ export default function ApplicationDetailsModal({
         body: JSON.stringify({ application_id: applicationId, document_id: documentAts }),
       });
       setAnalyse(data);
-      toast.success(`Analyse terminée : ${data.score}% de compatibilité.`);
+      toast.success(t('ats.terminee', { score: data.score }));
       onUpdated();
     } catch (error: unknown) {
-      toast.error(getErrorMessage(error, "Erreur lors de l'analyse ATS."));
+      toast.error(getErrorMessage(error, t('commun.erreurReseau')));
     } finally {
       setIsAnalyzing(false);
     }
@@ -253,12 +254,12 @@ export default function ApplicationDetailsModal({
               className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-medium ${statutMeta?.badge ?? ''}`}
             >
               <span className={`size-1.5 rounded-full ${statutMeta?.dot ?? ''}`} />
-              {statutMeta?.label ?? application.statut}
+              {t(`statut.${application.statut}`)}
             </span>
             <button
               type="button"
               onClick={onClose}
-              aria-label="Fermer"
+              aria-label={t('commun.fermer')}
               className="rounded-lg px-2 py-1 text-xl leading-none text-littoral-dark/50 transition hover:bg-coton-dark hover:text-littoral-dark"
             >
               ×
@@ -266,7 +267,7 @@ export default function ApplicationDetailsModal({
           </div>
         </div>
 
-        <div role="tablist" aria-label="Sections de la candidature" className="mt-5 flex gap-1 overflow-x-auto">
+        <div role="tablist" aria-label={t('nav.menu')} className="mt-5 flex gap-1 overflow-x-auto">
           {ONGLETS.map((item) => {
             const actif = onglet === item.id;
 
@@ -282,7 +283,7 @@ export default function ApplicationDetailsModal({
                     : 'border-transparent text-littoral-dark/60 hover:text-littoral-dark'
                 }`}
               >
-                {item.label}
+                {t(item.cle)}
                 {item.id === 'documents' && documents.length > 0 && (
                   <span className="ml-1.5 rounded-full bg-littoral-light/25 px-1.5 py-0.5 text-xs text-littoral-dark">
                     {documents.length}
@@ -304,7 +305,7 @@ export default function ApplicationDetailsModal({
         {onglet === 'informations' && (
           <form onSubmit={handleUpdate} className="space-y-5">
             <div>
-              <label className="mb-2 block text-sm font-medium text-littoral-dark">Statut</label>
+              <label className="mb-2 block text-sm font-medium text-littoral-dark">{t('candidature.statutLabel')}</label>
               <div className="flex flex-wrap gap-2">
                 {STATUT_VALUES.map((statut) => {
                   const meta = STATUT_META[statut];
@@ -323,19 +324,19 @@ export default function ApplicationDetailsModal({
                       }`}
                     >
                       <span className={`size-1.5 rounded-full ${meta.dot}`} />
-                      {meta.label}
+                      {t(`statut.${statut}`)}
                     </button>
                   );
                 })}
               </div>
               <p className="mt-2 text-xs text-littoral-dark/50">
-                Le changement est appliqué immédiatement et déplace la carte dans le tableau.
+                {t('candidature.statutAide')}
               </p>
             </div>
 
             <div className="grid gap-4 sm:grid-cols-2">
               <label className="space-y-1.5">
-                <span className="block text-sm font-medium text-littoral-dark">Titre du poste</span>
+                <span className="block text-sm font-medium text-littoral-dark">{t('candidature.poste')}</span>
                 <input
                   type="text"
                   value={editForm.titre_poste}
@@ -345,7 +346,7 @@ export default function ApplicationDetailsModal({
               </label>
 
               <label className="space-y-1.5">
-                <span className="block text-sm font-medium text-littoral-dark">Entreprise</span>
+                <span className="block text-sm font-medium text-littoral-dark">{t('candidature.entreprise')}</span>
                 <input
                   type="text"
                   value={editForm.nom_entreprise}
@@ -356,7 +357,7 @@ export default function ApplicationDetailsModal({
             </div>
 
             <label className="block space-y-1.5">
-              <span className="block text-sm font-medium text-littoral-dark">URL de l&apos;offre</span>
+              <span className="block text-sm font-medium text-littoral-dark">{t('candidature.urlOffre')}</span>
               <input
                 type="url"
                 value={editForm.url_offre}
@@ -368,7 +369,7 @@ export default function ApplicationDetailsModal({
 
             <label className="block space-y-1.5">
               <span className="block text-sm font-medium text-littoral-dark">
-                Description de l&apos;offre
+                {t('candidature.description')}
               </span>
               <textarea
                 rows={5}
@@ -377,17 +378,17 @@ export default function ApplicationDetailsModal({
                 className={INPUT_CLASS}
               />
               <span className="block text-xs text-littoral-dark/50">
-                Utilisée par la génération de lettre et l&apos;analyse ATS.
+                {t('candidature.descriptionAide')}
               </span>
             </label>
 
             <label className="block space-y-1.5">
-              <span className="block text-sm font-medium text-littoral-dark">Notes personnelles</span>
+              <span className="block text-sm font-medium text-littoral-dark">{t('candidature.notes')}</span>
               <textarea
                 rows={4}
                 value={editForm.notes}
                 onChange={(e) => setEditForm((p) => ({ ...p, notes: e.target.value }))}
-                placeholder="Contact rencontré, salaire évoqué, points à préparer..."
+                placeholder={t('candidature.notesPlaceholder')}
                 className={INPUT_CLASS}
               />
             </label>
@@ -399,11 +400,11 @@ export default function ApplicationDetailsModal({
                 onClick={handleDelete}
                 className="rounded-xl border border-laterite/40 px-4 py-2.5 text-sm font-semibold text-laterite transition-colors hover:bg-laterite/10 disabled:opacity-50"
               >
-                {isDeleting ? 'Suppression...' : 'Supprimer la candidature'}
+                {isDeleting ? t('commun.suppression') : t('commun.supprimer')}
               </button>
 
               <button type="submit" disabled={isSaving} className={BTN_PRIMAIRE}>
-                {isSaving ? 'Enregistrement...' : 'Enregistrer les modifications'}
+                {isSaving ? t('commun.enregistrement') : t('commun.enregistrer')}
               </button>
             </div>
           </form>
@@ -416,7 +417,7 @@ export default function ApplicationDetailsModal({
               onSubmit={handleUpload}
               className="space-y-3 rounded-2xl border border-littoral-light/30 bg-coton-dark/40 p-4"
             >
-              <h3 className="text-sm font-semibold text-littoral-dark">Attacher un document</h3>
+              <h3 className="text-sm font-semibold text-littoral-dark">{t('documents.attacher')}</h3>
 
               <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
                 <input
@@ -428,25 +429,25 @@ export default function ApplicationDetailsModal({
                 <select
                   value={typeDocument}
                   onChange={(e) => setTypeDocument(e.target.value as DocumentType)}
-                  aria-label="Type de document"
+                  aria-label={t('documents.type')}
                   className={INPUT_CLASS}
                 >
                   {DOCUMENT_TYPES.map((type) => (
                     <option key={type} value={type}>
-                      {DOCUMENT_TYPE_LABELS[type]}
+                      {t(`documents.types.${type}`)}
                     </option>
                   ))}
                 </select>
               </div>
 
               <button type="submit" disabled={!selectedFile || isUploading} className={BTN_PRIMAIRE}>
-                {isUploading ? 'Téléversement...' : 'Ajouter le document'}
+                {isUploading ? t('commun.enregistrement') : t('documents.ajouter')}
               </button>
-              <p className="text-xs text-littoral-dark/50">PDF, DOC ou DOCX — 10 Mo maximum.</p>
+              <p className="text-xs text-littoral-dark/50">{t('documents.contraintes')}</p>
             </form>
 
             <div>
-              <h3 className="mb-3 text-sm font-semibold text-littoral-dark">Documents attachés</h3>
+              <h3 className="mb-3 text-sm font-semibold text-littoral-dark">{t('documents.attaches')}</h3>
 
               {docsLoading ? (
                 <div className="space-y-2">
@@ -455,7 +456,7 @@ export default function ApplicationDetailsModal({
                 </div>
               ) : documents.length === 0 ? (
                 <p className="rounded-xl border border-dashed border-littoral-light/40 px-4 py-8 text-center text-sm text-littoral-dark/60">
-                  Aucun document attaché à cette candidature.
+                  {t('documents.aucun')}
                 </p>
               ) : (
                 <ul className="space-y-2">
@@ -474,19 +475,19 @@ export default function ApplicationDetailsModal({
                           {doc.nom_fichier || doc.libelle || 'Document'}
                         </a>
                         <span className="text-xs text-littoral-dark/50">
-                          {DOCUMENT_TYPE_LABELS[doc.type_document] ?? doc.type_document}
+                          {t(`documents.types.${doc.type_document}`)}
                           {doc.created_at &&
-                            ` · ${new Date(doc.created_at).toLocaleDateString('fr-FR')}`}
+                            ` · ${new Date(doc.created_at).toLocaleDateString(formatLocale)}`}
                         </span>
                       </div>
 
                       <button
                         type="button"
                         onClick={() => handleDeleteDocument(doc.id)}
-                        aria-label={`Supprimer ${doc.nom_fichier || 'le document'}`}
+                        aria-label={`${t('commun.supprimer')} ${doc.nom_fichier || ''}`}
                         className="shrink-0 rounded-lg px-2 py-1 text-sm text-littoral-dark/40 transition hover:bg-laterite/10 hover:text-laterite"
                       >
-                        Supprimer
+                        {t('commun.supprimer')}
                       </button>
                     </li>
                   ))}
@@ -501,9 +502,9 @@ export default function ApplicationDetailsModal({
           <div className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <h3 className="font-semibold text-littoral-dark">Lettre de motivation</h3>
+                <h3 className="font-semibold text-littoral-dark">{t('lettre.titre')}</h3>
                 <p className="text-sm text-littoral-dark/60">
-                  Générée par Claude à partir de la description de l&apos;offre.
+                  {t('lettre.sousTitre')}
                 </p>
               </div>
 
@@ -512,14 +513,13 @@ export default function ApplicationDetailsModal({
                 disabled={isGenerating || !application.description_offre}
                 className={BTN_ACCENT}
               >
-                {isGenerating ? 'Génération...' : generatedLetter ? 'Regénérer' : 'Générer avec Claude'}
+                {isGenerating ? t('lettre.generation') : generatedLetter ? t('lettre.regenerer') : t('lettre.generer')}
               </button>
             </div>
 
             {!application.description_offre && (
               <p className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                Ajoutez une description de l&apos;offre dans l&apos;onglet Informations pour obtenir
-                une lettre pertinente.
+                {t('lettre.descriptionManquante')}
               </p>
             )}
 
@@ -544,11 +544,11 @@ export default function ApplicationDetailsModal({
                   type="button"
                   onClick={async () => {
                     await navigator.clipboard.writeText(generatedLetter);
-                    toast.success('Lettre copiée dans le presse-papiers.');
+                    toast.success(t('lettre.copie'));
                   }}
                   className="rounded-xl border border-littoral-dark/20 px-4 py-2 text-sm font-medium text-littoral-dark transition hover:bg-coton-dark"
                 >
-                  Copier la lettre
+                  {t('lettre.copier')}
                 </button>
               </div>
             )}
@@ -559,26 +559,25 @@ export default function ApplicationDetailsModal({
         {onglet === 'ats' && (
           <div className="space-y-5">
             <div className="rounded-2xl border border-littoral-light/30 bg-coton-dark/40 p-4">
-              <h3 className="mb-1 font-semibold text-littoral-dark">Analyse de compatibilité</h3>
+              <h3 className="mb-1 font-semibold text-littoral-dark">{t('ats.titre')}</h3>
               <p className="mb-3 text-sm text-littoral-dark/60">
-                Claude lit votre CV et le compare à la description du poste pour estimer vos chances
-                de passer un filtre ATS.
+                {t('ats.sousTitre')}
               </p>
 
               {pdfsDisponibles.length === 0 ? (
                 <p className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                  Attachez d&apos;abord un CV au format PDF dans l&apos;onglet Documents.
+                  {t('ats.pdfRequis')}
                 </p>
               ) : (
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
                   <label className="flex-1 space-y-1.5">
-                    <span className="block text-sm font-medium text-littoral-dark">CV à analyser</span>
+                    <span className="block text-sm font-medium text-littoral-dark">{t('ats.cvAAnalyser')}</span>
                     <select
                       value={documentAts}
                       onChange={(e) => setDocumentAts(e.target.value)}
                       className={INPUT_CLASS}
                     >
-                      <option value="">Choisir un document…</option>
+                      <option value="">{t('ats.choisir')}</option>
                       {pdfsDisponibles.map((doc) => (
                         <option key={doc.id} value={doc.id}>
                           {doc.nom_fichier || doc.libelle || 'Document'}
@@ -592,7 +591,7 @@ export default function ApplicationDetailsModal({
                     disabled={isAnalyzing || !documentAts}
                     className={BTN_ACCENT}
                   >
-                    {isAnalyzing ? 'Analyse en cours...' : 'Lancer l’analyse'}
+                    {isAnalyzing ? t('ats.enCours') : t('ats.lancer')}
                   </button>
                 </div>
               )}
@@ -600,19 +599,19 @@ export default function ApplicationDetailsModal({
 
             {isAnalyzing && (
               <p className="text-center text-sm text-littoral-dark/60">
-                Claude lit le PDF et compare les compétences… cela prend quelques secondes.
+                {t('ats.patience')}
               </p>
             )}
 
             {analyse && !isAnalyzing && (
               <div className="animate-fade-in space-y-5">
                 <div className="flex flex-col items-center gap-4 rounded-2xl border border-littoral-light/30 bg-white p-5 sm:flex-row sm:items-start">
-                  <ScoreRing score={analyse.score} size={96} withLabel />
+                  <ScoreRing score={analyse.score} size={96} label={t('ats.compatibilite')} />
                   <div className="flex-1 text-center sm:text-left">
                     <p className="text-sm leading-relaxed text-littoral-dark/80">{analyse.synthese}</p>
                     {analyse.analyse_le && (
                       <p className="mt-2 text-xs text-littoral-dark/50">
-                        Analysé le {new Date(analyse.analyse_le).toLocaleDateString('fr-FR')}
+                        {t('ats.analyseLe', { date: new Date(analyse.analyse_le).toLocaleDateString(formatLocale) })}
                       </p>
                     )}
                   </div>
@@ -621,7 +620,7 @@ export default function ApplicationDetailsModal({
                 {analyse.mots_cles_manquants.length > 0 && (
                   <section>
                     <h4 className="mb-2 text-sm font-semibold text-littoral-dark">
-                      Mots-clés manquants
+                      {t('ats.motsClesManquants')}
                     </h4>
                     <ul className="flex flex-wrap gap-2">
                       {analyse.mots_cles_manquants.map((mot) => {
@@ -629,7 +628,7 @@ export default function ApplicationDetailsModal({
                         return (
                           <li
                             key={mot.mot_cle}
-                            title={meta?.label}
+                            title={t(`ats.importance.${mot.importance}`)}
                             className={`rounded-full border px-3 py-1 text-sm ${meta?.className ?? ''}`}
                           >
                             {mot.mot_cle}
@@ -642,7 +641,7 @@ export default function ApplicationDetailsModal({
 
                 {analyse.points_forts.length > 0 && (
                   <section>
-                    <h4 className="mb-2 text-sm font-semibold text-littoral-dark">Points forts</h4>
+                    <h4 className="mb-2 text-sm font-semibold text-littoral-dark">{t('ats.pointsForts')}</h4>
                     <ul className="space-y-1.5">
                       {analyse.points_forts.map((point) => (
                         <li key={point} className="flex gap-2 text-sm text-littoral-dark/80">
@@ -658,7 +657,7 @@ export default function ApplicationDetailsModal({
 
                 {analyse.recommandations.length > 0 && (
                   <section>
-                    <h4 className="mb-2 text-sm font-semibold text-littoral-dark">Recommandations</h4>
+                    <h4 className="mb-2 text-sm font-semibold text-littoral-dark">{t('ats.recommandations')}</h4>
                     <ul className="space-y-1.5">
                       {analyse.recommandations.map((reco) => (
                         <li key={reco} className="flex gap-2 text-sm text-littoral-dark/80">
@@ -676,7 +675,7 @@ export default function ApplicationDetailsModal({
 
             {!analyse && !isAnalyzing && pdfsDisponibles.length > 0 && (
               <p className="rounded-xl border border-dashed border-littoral-light/40 px-4 py-8 text-center text-sm text-littoral-dark/60">
-                Aucune analyse pour cette candidature.
+                {t('ats.aucuneAnalyse')}
               </p>
             )}
           </div>

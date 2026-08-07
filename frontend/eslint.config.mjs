@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Scripts de build Node (CommonJS), hors périmètre du linting applicatif.
+    "scripts/**",
   ]),
 ]);
 
