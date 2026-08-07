@@ -1,6 +1,8 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
+const compression = require('compression');
 const multer = require('multer');
 const pool = require('./config/db');
 const { sendError, sendSuccess } = require('./utils/http');
@@ -18,24 +20,56 @@ const carriereRoutes = require('./routes/carriereRoutes');
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Nécessaire derrière un reverse proxy pour que req.ip soit l'IP cliente
-// réelle (limitation de débit sur /auth/login).
-app.set('trust proxy', 1);
+// Vercel définit VERCEL=1 ; utile pour distinguer serverless et exécution locale.
+const EN_PRODUCTION = process.env.NODE_ENV === 'production' || process.env.VERCEL === '1';
+
+// --- Vérifications de configuration au démarrage -------------------------
+// Mieux vaut un échec bruyant au boot qu'une faille silencieuse en ligne.
+const manquantes = ['DATABASE_URL', 'ADMIN_PASSWORD'].filter((cle) => !process.env[cle]);
+if (manquantes.length > 0) {
+    console.error(`Variables d'environnement manquantes : ${manquantes.join(', ')}`);
+    if (EN_PRODUCTION) throw new Error('Configuration incomplète : démarrage interrompu.');
+}
 
 const allowedOrigins = (process.env.FRONTEND_ORIGIN || '')
     .split(',')
     .map((value) => value.trim())
     .filter(Boolean);
 
+if (EN_PRODUCTION && allowedOrigins.length === 0) {
+    throw new Error(
+        'FRONTEND_ORIGIN doit être défini en production : sans lui, toutes les origines seraient acceptées.'
+    );
+}
+
+// Derrière le proxy Vercel : nécessaire pour que req.ip soit l'IP cliente
+// réelle (limitation de débit sur /auth/login).
+app.set('trust proxy', 1);
+app.disable('x-powered-by');
+
+app.use(
+    helmet({
+        // L'API ne sert que du JSON : une CSP n'a rien à protéger ici, et
+        // celle par défaut de helmet gênerait les réponses d'erreur.
+        contentSecurityPolicy: false,
+        crossOriginResourcePolicy: { policy: 'same-site' },
+    })
+);
+
+app.use(compression());
+
 app.use(
     cors({
         origin: (origin, callback) => {
+            // Requêtes sans origine : curl, sondes de monitoring, webhooks.
             if (!origin) return callback(null, true);
             if (allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
                 return callback(null, true);
             }
             return callback(new Error('Not allowed by CORS'));
         },
+        credentials: false,
+        maxAge: 86400,
     })
 );
 
@@ -98,11 +132,12 @@ app.use((err, req, res, next) => {
     return sendError(res, 500, 'INTERNAL_SERVER_ERROR', 'Erreur interne du serveur.');
 });
 
-// Fail-fast : sans ADMIN_PASSWORD, l'API serait injoignable après login.
-if (!process.env.ADMIN_PASSWORD) {
-    console.error('ADMIN_PASSWORD est absent du .env — la connexion sera impossible.');
+// En serverless, Vercel invoque l'application exportée : ouvrir un port serait
+// inutile. En local, on écoute normalement.
+if (!process.env.VERCEL) {
+    app.listen(port, () => {
+        console.log(`Serveur démarré sur http://localhost:${port}`);
+    });
 }
 
-app.listen(port, () => {
-    console.log(`Serveur démarré sur http://localhost:${port}`);
-});
+module.exports = app;
