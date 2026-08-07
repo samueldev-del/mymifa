@@ -5,6 +5,9 @@ const { telechargerObjet, cleDepuisUrl } = require('../services/s3');
 
 const MODELE = 'claude-opus-5';
 
+/** Langue de rédaction demandée à Claude. L'allemand est le défaut. */
+const LANGUES = { de: 'allemand', en: 'anglais', fr: 'français' };
+
 const anthropic = new Anthropic({
     apiKey: process.env.ANTHROPIC_API_KEY,
 });
@@ -17,17 +20,47 @@ const journaliserErreurIA = (contexte, error) => {
     console.error('------------------------');
 };
 
+/** Contexte candidat tiré du profil, ignoré s'il est vide. */
+const lireProfil = async () => {
+    try {
+        const { rows } = await pool.query(
+            'SELECT nom, titre_professionnel, email, telephone, ville FROM profil WHERE id = 1'
+        );
+        return rows[0] || null;
+    } catch (error) {
+        // Une lettre sans identité vaut mieux qu'une erreur : on dégrade.
+        console.error('Profil illisible pour la génération de lettre:', error.message);
+        return null;
+    }
+};
+
 const generateLetter = async (req, res) => {
     const { description_offre, nom_entreprise } = req.body;
+    const langue = LANGUES[req.body.langue] || LANGUES.de;
 
     const systemPrompt = [
-        "Tu es un expert en recrutement pour le marché IT allemand (DevOps, Cloud).",
-        "Rédige une lettre de motivation percutante, professionnelle mais moderne.",
+        'Tu es un expert en recrutement pour le marché IT allemand (DevOps, Cloud).',
+        'Rédige une lettre de motivation percutante, professionnelle mais moderne.',
         "Ne génère que le corps de la lettre, sans les en-têtes d'adresses.",
-        "Réponds uniquement avec la lettre, sans préambule ni commentaire.",
+        'Signe avec le nom du candidat quand il est fourni.',
+        'Réponds uniquement avec la lettre, sans préambule ni commentaire.',
+        `Rédige intégralement en ${langue}.`,
     ].join(' ');
 
     try {
+        const profil = await lireProfil();
+
+        const identite = profil
+            ? [
+                  'Le candidat :',
+                  profil.nom && `- Nom : ${profil.nom}`,
+                  profil.titre_professionnel && `- Titre : ${profil.titre_professionnel}`,
+                  profil.ville && `- Ville : ${profil.ville}`,
+              ]
+                  .filter(Boolean)
+                  .join('\n')
+            : '';
+
         const msg = await anthropic.messages.create({
             model: MODELE,
             max_tokens: 4000,
@@ -35,7 +68,16 @@ const generateLetter = async (req, res) => {
             messages: [
                 {
                     role: 'user',
-                    content: `Voici l'offre pour l'entreprise ${nom_entreprise} :\n\n${description_offre}\n\nRédige la lettre de motivation.`,
+                    content: [
+                        identite,
+                        `Voici l'offre pour l'entreprise ${nom_entreprise} :`,
+                        '',
+                        description_offre,
+                        '',
+                        'Rédige la lettre de motivation.',
+                    ]
+                        .filter(Boolean)
+                        .join('\n'),
                 },
             ],
         });

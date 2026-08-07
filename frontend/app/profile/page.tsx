@@ -16,6 +16,9 @@ const FIELDS = [
     wide: false,
     placeholder: 'Ingénieur DevOps',
   },
+  { name: 'email', cle: 'profil.email', type: 'email', wide: false, placeholder: 'contact@exemple.com' },
+  { name: 'telephone', cle: 'profil.telephone', type: 'tel', wide: false, placeholder: '' },
+  { name: 'ville', cle: 'profil.ville', type: 'text', wide: false, placeholder: 'Berlin' },
   { name: 'linkedin_url', cle: 'profil.linkedin', type: 'url', wide: true, placeholder: 'https://linkedin.com/in/…' },
   { name: 'github_url', cle: 'profil.github', type: 'url', wide: true, placeholder: 'https://github.com/…' },
   { name: 'portfolio_url', cle: 'profil.portfolio', type: 'url', wide: true, placeholder: 'https://…' },
@@ -33,13 +36,14 @@ export default function ProfilePage() {
   const fetchProfil = useCallback(async () => {
     try {
       const data = await apiFetch<Partial<Profil>>('/profil');
-      setProfil({
-        nom: data?.nom || '',
-        titre_professionnel: data?.titre_professionnel || '',
-        linkedin_url: data?.linkedin_url || '',
-        github_url: data?.github_url || '',
-        portfolio_url: data?.portfolio_url || '',
-      });
+      // Fusion avec le profil vide : les champs absents ou null deviennent des
+      // chaînes vides, et ajouter un champ ne demande plus de toucher ici.
+      setProfil((precedent) => ({
+        ...precedent,
+        ...Object.fromEntries(
+          Object.keys(EMPTY_PROFIL).map((cle) => [cle, data?.[cle as keyof Profil] ?? ''])
+        ),
+      }));
     } catch (error: unknown) {
       toast.error(getErrorMessage(error, t('profil.erreurChargement')));
     } finally {

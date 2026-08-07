@@ -1,9 +1,20 @@
 const pool = require('../config/db');
 const { sendSuccess, sendError } = require('../utils/http');
 
+const CHAMPS = [
+    'nom',
+    'titre_professionnel',
+    'email',
+    'telephone',
+    'ville',
+    'linkedin_url',
+    'github_url',
+    'portfolio_url',
+];
+
 const getProfil = async (req, res) => {
     try {
-        const result = await pool.query('SELECT * FROM profil WHERE id = 1');
+        const result = await pool.query(`SELECT id, ${CHAMPS.join(', ')} FROM profil WHERE id = 1`);
 
         if (result.rows.length === 0) {
             return sendError(res, 404, 'PROFIL_NOT_FOUND', 'Profil introuvable.');
@@ -17,15 +28,13 @@ const getProfil = async (req, res) => {
 };
 
 const updateProfil = async (req, res) => {
-    const { nom, titre_professionnel, linkedin_url, github_url, portfolio_url } = req.body;
+    const affectations = CHAMPS.map((champ, index) => `${champ} = $${index + 1}`).join(', ');
+    const valeurs = CHAMPS.map((champ) => req.body[champ] ?? '');
 
     try {
         const result = await pool.query(
-            `UPDATE profil
-             SET nom = $1, titre_professionnel = $2, linkedin_url = $3, github_url = $4, portfolio_url = $5
-             WHERE id = 1
-             RETURNING *`,
-            [nom, titre_professionnel, linkedin_url, github_url, portfolio_url]
+            `UPDATE profil SET ${affectations} WHERE id = 1 RETURNING id, ${CHAMPS.join(', ')}`,
+            valeurs
         );
 
         if (result.rows.length === 0) {
@@ -39,4 +48,4 @@ const updateProfil = async (req, res) => {
     }
 };
 
-module.exports = { getProfil, updateProfil };
+module.exports = { getProfil, updateProfil, CHAMPS };
