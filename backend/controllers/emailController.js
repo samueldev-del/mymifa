@@ -2,21 +2,8 @@ const crypto = require('crypto');
 const pool = require('../config/db');
 const { sendSuccess, sendError } = require('../utils/http');
 const { lireMessagesRecents, estConfigure, FENETRE_JOURS } = require('../services/email');
+const { detecterStatut, expediteurIgnore } = require('../services/detection');
 const { STATUTS_CLOTURES } = require('../config/constants');
-
-// Mots-clés de détection (français, anglais, allemand).
-const MOTS_REFUS = [
-    'unfortunately', 'malheureusement', 'leider', 'not proceeding', 'bedauern',
-    'regret', 'absage', 'nicht weiter', 'anderen kandidaten',
-];
-const MOTS_ENTRETIEN = [
-    'interview', 'entretien', 'einladung', 'next steps', 'kennenlernen',
-    'termin', 'gespräch', 'vorstellungsgespräch',
-];
-const MOTS_ACCEPTE = [
-    'offer', "offre d'emploi", 'angebot', 'congratulations', 'félicitations',
-    'zusage', 'vertrag', 'arbeitsvertrag',
-];
 
 /** Suffixes juridiques à ignorer lors du rapprochement entreprise ↔ domaine. */
 const SUFFIXES = /\b(gmbh|ag|se|kg|ohg|mbh|ug|sarl|sas|sa|inc|ltd|llc|bv|nv|co)\b/gi;
@@ -27,15 +14,6 @@ const normaliser = (valeur) =>
         .replace(SUFFIXES, ' ')
         .replace(/[^a-z0-9]+/g, '')
         .trim();
-
-const detecterStatut = (texte) => {
-    const minuscule = (texte || '').toLowerCase();
-    // L'ordre compte : un refus poli mentionne souvent « Gespräch ».
-    if (MOTS_REFUS.some((mot) => minuscule.includes(mot))) return 'refuse';
-    if (MOTS_ACCEPTE.some((mot) => minuscule.includes(mot))) return 'accepte';
-    if (MOTS_ENTRETIEN.some((mot) => minuscule.includes(mot))) return 'entretien';
-    return null;
-};
 
 /**
  * Rapproche un message d'une candidature.
@@ -99,7 +77,10 @@ const syncEmails = async (req, res) => {
         for (const message of messages) {
             if (traites.has(message.messageId)) continue;
 
-            const statut = detecterStatut(`${message.subject} ${message.text}`);
+            // Les plateformes d'emploi notifient en masse : leurs alertes
+            // parlent d'offres et de refus sans concerner vos candidatures.
+            const ignore = expediteurIgnore(message.from);
+            const statut = ignore ? null : detecterStatut(`${message.subject} ${message.text}`);
             const { candidature, via } = statut
                 ? trouverCandidature(message, actives)
                 : { candidature: null, via: null };
