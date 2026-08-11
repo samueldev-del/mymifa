@@ -4,7 +4,9 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import LangueSwitch from './LangueSwitch';
+import Logo from './Logo';
 import { redirectToLogin } from '@/lib/auth';
+import { ROUTES_PUBLIQUES } from '@/lib/routes';
 import { useT } from '@/i18n';
 
 const NAV_LINKS = [
@@ -21,7 +23,7 @@ export default function Header() {
   const [menuOuvert, setMenuOuvert] = useState(false);
 
   // Pas de navigation sur l'écran de verrouillage.
-  if (pathname === '/login') return null;
+  if (ROUTES_PUBLIQUES.includes(pathname)) return null;
 
   const estActif = (href: string) =>
     href === '/' ? pathname === '/' : pathname.startsWith(href);
@@ -37,9 +39,7 @@ export default function Header() {
     <header className="sticky top-0 z-40 border-b border-littoral-light/30 bg-coton/85 backdrop-blur">
       <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-3 sm:px-6">
         <Link href="/" className="flex shrink-0 items-center gap-2.5">
-          <span className="flex size-9 items-center justify-center rounded-xl bg-laterite font-bold text-white">
-            M
-          </span>
+          <Logo className="size-9 rounded-xl" />
           <span className="text-lg font-bold tracking-tight text-littoral-dark">Mymifa</span>
         </Link>
 

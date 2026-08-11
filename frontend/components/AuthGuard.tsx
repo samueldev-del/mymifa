@@ -3,6 +3,7 @@
 import { useEffect, useSyncExternalStore } from 'react';
 import { usePathname } from 'next/navigation';
 import { getToken, redirectToLogin } from '@/lib/auth';
+import { ROUTES_PUBLIQUES } from '@/lib/routes';
 
 /**
  * État à trois valeurs. « inconnu » est indispensable : au premier rendu
@@ -30,7 +31,9 @@ const snapshotServeur = (): EtatSession => 'inconnu';
  */
 export default function AuthGuard({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const isPublic = pathname === '/login';
+  // Impressum et Datenschutzerklärung doivent rester atteignables sans
+  // connexion : une mention légale derrière un mot de passe ne vaut rien.
+  const isPublic = ROUTES_PUBLIQUES.includes(pathname);
 
   const session = useSyncExternalStore(subscribe, snapshotClient, snapshotServeur);
 

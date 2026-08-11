@@ -1,11 +1,14 @@
 'use client';
 
 import { Suspense, useState } from 'react';
+import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { toast } from 'sonner';
 import { apiFetch, getErrorMessage } from '@/lib/api';
 import { useLangue } from '@/i18n';
 import { setToken } from '@/lib/auth';
+import Logo from '@/components/Logo';
+import PhotoFamille from '@/components/PhotoFamille';
 
 function LoginForm() {
   const { t } = useLangue();
@@ -41,13 +44,13 @@ function LoginForm() {
   };
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-coton p-6">
+    <main className="flex min-h-screen flex-col items-center justify-center gap-6 bg-coton p-6 lg:flex-row lg:items-center lg:gap-12 lg:p-16">
+      <PhotoFamille />
+
       <div className="w-full max-w-md">
-        <div className="animate-fade-in rounded-3xl border border-littoral-light/30 bg-white/80 p-8 shadow-sm backdrop-blur">
-          <div className="mb-8 flex flex-col items-center text-center">
-            <span className="mb-4 flex size-14 items-center justify-center rounded-2xl bg-laterite text-2xl font-bold text-white">
-              M
-            </span>
+        <div className="animate-fade-in rounded-3xl border border-littoral-light/30 bg-white p-6 shadow-sm sm:p-8">
+          <div className="mb-6 flex flex-col items-center text-center">
+            <Logo className="mb-4 size-14 rounded-2xl" />
             <h1 className="text-2xl font-bold text-littoral-dark">{t('auth.titre')}</h1>
             <p className="mt-1 text-sm text-littoral-dark/70">
               {t('auth.sousTitre')}
@@ -78,6 +81,16 @@ function LoginForm() {
             </button>
           </form>
         </div>
+
+        {/* Seul point d'entrée public : les mentions légales s'atteignent d'ici. */}
+        <nav className="mt-6 flex justify-center gap-4 text-xs text-littoral-dark/50">
+          <Link href="/impressum" className="transition hover:text-littoral-dark hover:underline">
+            Impressum
+          </Link>
+          <Link href="/datenschutz" className="transition hover:text-littoral-dark hover:underline">
+            Datenschutz
+          </Link>
+        </nav>
       </div>
     </main>
   );
