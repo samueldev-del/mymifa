@@ -22,6 +22,18 @@ export default function PwaProvider() {
   useEffect(() => {
     if (!('serviceWorker' in navigator)) return;
 
+    // En développement, le service worker est nuisible : Turbopack réutilise
+    // les mêmes noms de chunks d'une compilation à l'autre, si bien que le
+    // cache resert du code périmé — la connexion échoue sans erreur visible.
+    // On désenregistre aussi ceux déjà installés par une exécution passée.
+    if (process.env.NODE_ENV !== 'production') {
+      navigator.serviceWorker.getRegistrations().then((registrations) => {
+        registrations.forEach((registration) => registration.unregister());
+      });
+      caches?.keys().then((noms) => noms.forEach((nom) => caches.delete(nom)));
+      return;
+    }
+
     // Après le chargement : l'enregistrement ne doit pas concurrencer le rendu.
     const enregistrer = () => {
       navigator.serviceWorker.register('/sw.js').catch((error) => {

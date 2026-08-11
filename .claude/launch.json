@@ -3,6 +3,9 @@
   "configurations": [
     {
       "name": "mymifa-frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "cwd": "frontend",
       "url": "http://localhost:3001",
       "port": 3001
     }

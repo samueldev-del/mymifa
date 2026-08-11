@@ -36,6 +36,25 @@ const allowedOrigins = (process.env.FRONTEND_ORIGIN || '')
     .map((value) => value.trim())
     .filter(Boolean);
 
+/**
+ * Vrai pour une origine servie par la machine de développement : boucle locale
+ * ou adresse privée RFC 1918. Jamais consulté en production.
+ */
+function estOrigineLocale(origin) {
+    try {
+        const { hostname } = new URL(origin);
+        return (
+            hostname === 'localhost' ||
+            hostname === '127.0.0.1' ||
+            /^192\.168\./.test(hostname) ||
+            /^10\./.test(hostname) ||
+            /^172\.(1[6-9]|2\d|3[01])\./.test(hostname)
+        );
+    } catch {
+        return false;
+    }
+}
+
 if (EN_PRODUCTION && allowedOrigins.length === 0) {
     throw new Error(
         'FRONTEND_ORIGIN doit être défini en production : sans lui, toutes les origines seraient acceptées.'
@@ -64,6 +83,13 @@ app.use(
             // Requêtes sans origine : curl, sondes de monitoring, webhooks.
             if (!origin) return callback(null, true);
             if (allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+                return callback(null, true);
+            }
+            // En développement, le front est aussi atteint depuis le réseau
+            // local (téléphone qui teste la PWA). Ces adresses changent avec
+            // le réseau : les lister à la main serait à refaire sans cesse.
+            // La production, elle, reste sur la liste stricte.
+            if (!EN_PRODUCTION && estOrigineLocale(origin)) {
                 return callback(null, true);
             }
             return callback(new Error('Not allowed by CORS'));

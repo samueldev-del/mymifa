@@ -3,6 +3,33 @@ import { getToken, redirectToLogin } from './auth';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL;
 
+/**
+ * Adresse de l'API pour la requête en cours.
+ *
+ * Quand la page est ouverte depuis le réseau local — un téléphone qui teste la
+ * PWA sur http://192.168.x.y:3001 — « localhost » désignerait l'appareil
+ * lui-même et non la machine de développement. On recopie donc l'hôte de la
+ * page. En production l'adresse configurée n'est pas une boucle locale : la
+ * substitution ne se déclenche jamais.
+ */
+function resoudreApiUrl(): string | undefined {
+  if (!API_URL || typeof window === 'undefined') return API_URL;
+
+  try {
+    const url = new URL(API_URL);
+    const estBoucleLocale = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
+
+    if (estBoucleLocale && window.location.hostname !== url.hostname) {
+      url.hostname = window.location.hostname;
+      return url.toString();
+    }
+  } catch {
+    // Adresse relative ou malformée : on la laisse telle quelle.
+  }
+
+  return API_URL;
+}
+
 /** Erreur normalisee : porte le message metier renvoye par le backend. */
 export class ApiError extends Error {
   readonly status: number;
@@ -32,7 +59,8 @@ interface ApiFetchOptions extends RequestInit {
  * backend et leve une ApiError portant le message serveur.
  */
 export async function apiFetch<T>(path: string, init: ApiFetchOptions = {}): Promise<T> {
-  if (!API_URL) {
+  const baseUrl = resoudreApiUrl();
+  if (!baseUrl) {
     throw new ApiError("NEXT_PUBLIC_API_URL n'est pas configuree.", 0, 'CONFIG_MISSING');
   }
 
@@ -49,7 +77,7 @@ export async function apiFetch<T>(path: string, init: ApiFetchOptions = {}): Pro
 
   let response: Response;
   try {
-    response = await fetch(`${API_URL}${path}`, { ...requestInit, headers });
+    response = await fetch(`${baseUrl}${path}`, { ...requestInit, headers });
   } catch {
     throw new ApiError('Serveur injoignable. Verifiez votre connexion.', 0, 'NETWORK_ERROR');
   }
