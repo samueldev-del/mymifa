@@ -6,9 +6,30 @@ on:
     branches:
       - main
 
+# Moindre privilège : ce job ne fait que lire le dépôt. Sans ce bloc,
+# le GITHUB_TOKEN reçoit des permissions bien plus larges que nécessaire.
+permissions:
+  contents: read
+
+concurrency:
+  # Un groupe par référence Git : les runs d'une même PR se remplacent.
+  group: ci-${{ github.ref }}
+  # On annule les runs obsolètes sur une PR (seul le dernier commit compte),
+  # mais jamais sur main, où chaque commit mérite d'être vérifié.
+  # Contraste avec sync-emails.yml : là-bas cancel-in-progress est à false,
+  # parce qu'annuler une synchronisation en cours perdrait son travail.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  test:
+  frontend:
+    # Le job s'appelait "test" alors qu'il ne teste rien. Ce nom devient
+    # celui du status check exigé plus tard par la protection de branche :
+    # il doit décrire ce qui est réellement vérifié.
+    name: Frontend — lint & build
     runs-on: ubuntu-latest
+    # Garde-fou : sans timeout, un job bloqué tourne jusqu'à la limite
+    # plateforme de 6 heures et brûle 360 minutes de quota.
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
@@ -18,6 +39,12 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          # Met ~/.npm en cache entre les runs. Sans ça, npm ci retélécharge
+          # tout l'arbre de dépendances à chaque exécution.
+          cache: npm
+          # Obligatoire en monorepo : sans ce chemin, l'action cherche un
+          # lockfile à la racine, n'en trouve pas, et échoue.
+          cache-dependency-path: frontend/package-lock.json
 
       - name: Install frontend dependencies
         working-directory: frontend
