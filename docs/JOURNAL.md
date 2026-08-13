@@ -115,3 +115,111 @@ le passé, ces options protègent l'avenir en refusant tout push contenant un se
 2. `actionlint` dans la CI.
 3. Docker.
 4. AWS + Terraform.
+
+---
+
+## 2026-08-13 (suite) — Tests unitaires et durcissement de la CI
+
+### Pourquoi ces fonctions en premier
+
+`services/detection.js` classe les emails de recruteurs par expressions
+régulières. Ce type de code échoue **silencieusement** : un motif trop permissif
+produit un mauvais statut sans exception ni log. On ne s'en aperçoit qu'en
+constatant l'incohérence, des semaines plus tard.
+
+Ses fonctions sont pures — entrée texte, sortie valeur, aucune base de données,
+aucun réseau. Ce sont donc les moins chères à tester et les plus rentables à
+couvrir. Rapport valeur/effort maximal.
+
+### Choix de l'outil : `node:test`
+
+Trois candidats évalués : `node:test` (intégré à Node), Vitest, Jest.
+
+Retenu : `node:test`. Le `package.json` du backend n'avait qu'une seule
+devDependency ; ajouter des dizaines de paquets transitifs pour tester deux
+fonctions pures aurait été disproportionné. La syntaxe (`describe`, `test`,
+assertions) est proche de Jest, le transfert de compétence est direct.
+
+### Un bug trouvé par les tests
+
+Un test sur 24 a échoué au premier lancement.
+
+    Texte    : "we decided to invite you to an interview next week."
+    Attendu  : entretien
+    Obtenu   : refuse
+
+Cause : le motif `/we (have )?(decided|regret) (not )?to/i` rendait `not`
+optionnel. Toute phrase contenant « we decided to » était donc classée refus,
+y compris une invitation à un entretien ou une offre.
+
+Le motif mélangeait par ailleurs deux verbes au comportement différent :
+« we regret to » est un refus en soi, « we decided to » ne l'est que suivi de
+« not ». Les traiter ensemble était l'erreur de conception.
+
+Correction — un motif par verbe :
+
+    /we (have )?decided not to/i     (« not » obligatoire)
+    /we regret to/i                  (« not » sans objet)
+
+Un test de non-régression verrouille le comportement, avec un commentaire
+expliquant pourquoi `not` doit rester obligatoire — sans quoi quelqu'un
+remettra le `?` un jour « pour attraper plus de cas ».
+
+**Enseignement** : `node --check` validait ce fichier sans réserve. La syntaxe
+était parfaite, la sémantique fausse. Vérifier la forme ne dit rien du
+comportement.
+
+**Enseignement de méthode** : face à l'échec, le premier réflexe a été de
+supposer que la phrase de test était mal écrite. C'est le réflexe le plus
+dangereux du débogage — quand un test échoue, l'hypothèse par défaut n'est
+jamais « les données d'entrée sont mauvaises ». La question à se poser était :
+un recruteur peut-il écrire cette phrase ? Oui, évidemment. Donc le code avait
+tort.
+
+### Renommer un status check requis sans bloquer le dépôt
+
+Le job backend passait de `Backend — vérification syntaxique` à
+`Backend — syntaxe & tests`. Or ce nom est le **contexte exigé par le ruleset**.
+Merger le renommage sans précaution aurait laissé le ruleset attendre
+indéfiniment un check disparu — toutes les PR bloquées.
+
+Séquence appliquée :
+1. Mise à jour du ruleset **avant** le merge (un contexte n'a pas besoin
+   d'exister pour être déclaré). Toutes les PR deviennent temporairement
+   bloquées.
+2. La PR portant le renommage produit le nouveau contexte, donc se débloque
+   elle-même.
+3. Merge, et l'ancien contexte devient caduc.
+
+### Ce qui a été mis en place
+
+| Élément | Détail |
+|---|---|
+| Tests | 25 tests `node:test` sur `detecterStatut` et `expediteurIgnore` |
+| Script | `"test": "node --test"` dans `backend/package.json` |
+| CI backend | `node --check`, puis `npm ci`, puis `npm test` |
+| Ordre des étapes | syntaxe avant installation : un fichier cassé fait échouer le job en quelques secondes plutôt qu'après `npm ci` |
+| Ruleset | contexte mis à jour vers `Backend — syntaxe & tests` |
+
+Durée mesurée du job backend après ajout des tests : 13 s (estimation initiale :
+25-35 s). `npm ci` sur un backend à une seule devDependency est plus rapide que
+prévu, et le cache npm agit dès le premier run.
+
+### Incidents de manipulation Git
+
+Deux fois dans la session, une modification non committée a suivi un changement
+de branche. Le répertoire de travail n'appartient à aucune branche : il est
+partagé. Le seul moment sûr pour changer de branche est quand `git status` est
+propre.
+
+Un `git diff` affichant deux lignes identiques a révélé un fichier pourtant
+modifié : seul le saut de ligne final manquait. Git compare des octets, pas des
+lignes telles que l'œil les perçoit. `git diff --check` signale ce type de bruit.
+
+### Suite
+
+1. `actionlint` dans la CI — vérifier les workflows eux-mêmes.
+2. Politique sur les warnings ESLint (`<img>` dans `PhotoFamille.tsx`).
+3. Corriger `DEPLOIEMENT.md`, qui ne décrit plus l'architecture réelle.
+4. Docker — backend uniquement : le frontend reste sur Vercel, le containeriser
+   serait un exercice sans destination.
