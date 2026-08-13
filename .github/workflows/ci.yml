@@ -11,13 +11,18 @@ permissions:
   contents: read
 
 concurrency:
+  # Un groupe par référence Git : les runs d'une même PR se remplacent.
   group: ci-${{ github.ref }}
+  # On annule les runs obsolètes sur une PR (seul le dernier commit compte),
+  # mais jamais sur main, où chaque commit mérite d'être vérifié.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   frontend:
     name: Frontend — lint & build
     runs-on: ubuntu-latest
+    # Garde-fou : sans timeout, un job bloqué tourne jusqu'à la limite
+    # plateforme de 6 heures.
     timeout-minutes: 10
 
     steps:
@@ -29,6 +34,8 @@ jobs:
         with:
           node-version: 20
           cache: npm
+          # Obligatoire en monorepo : sans ce chemin, l'action cherche un
+          # lockfile à la racine et n'en trouve pas.
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install frontend dependencies
@@ -44,11 +51,9 @@ jobs:
         run: npm run build
 
   backend:
-    name: Backend — vérification syntaxique
+    name: Backend — syntaxe & tests
     runs-on: ubuntu-latest
-    # Plus court que le frontend : aucune dépendance n'est installée,
-    # ce job ne fait que lire des fichiers.
-    timeout-minutes: 5
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
@@ -58,12 +63,25 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 20
-          # Pas de cache : on n'installe rien. `node --check` analyse
-          # la syntaxe sans résoudre le moindre import.
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
 
+      # La syntaxe est vérifiée avant l'installation : si un fichier est cassé,
+      # le job échoue en quelques secondes plutôt qu'après `npm ci`.
+      # `node --check` reste utile malgré les tests : ceux-ci ne couvrent que
+      # services/detection.js, les autres fichiers n'ont aucune autre vérification.
       - name: Vérifier la syntaxe de tous les fichiers JS
         working-directory: backend
         run: |
           set -euo pipefail
           find . -path ./node_modules -prune -o -name '*.js' -print0 \
             | xargs -0 -r -n1 node --check
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Run backend tests
+        working-directory: backend
+        run: npm test
+        
