@@ -2,6 +2,17 @@ const { Pool } = require('pg');
 require('dotenv').config();
 
 const EN_SERVERLESS = process.env.VERCEL === '1';
+/**
+ * Neon (et la plupart des bases managées) exigent TLS. Un PostgreSQL local,
+ * lui, n'a pas de certificat et refuse la négociation — d'où l'échec avec
+ * « The server does not support SSL connections ».
+ *
+ * On active donc TLS uniquement quand la chaîne de connexion le demande.
+ * `rejectUnauthorized: false` accepte le certificat de Neon sans en vérifier
+ * la chaîne de confiance ; à durcir le jour où on maîtrisera l'autorité de
+ * certification (RDS fournit un bundle CA téléchargeable).
+ */
+const SSL_REQUIS = /sslmode=require/.test(process.env.DATABASE_URL || '');
 
 /**
  * Pool PostgreSQL vers Neon.
@@ -16,7 +27,7 @@ const pool = new Pool({
     max: EN_SERVERLESS ? 1 : 10,
     idleTimeoutMillis: EN_SERVERLESS ? 10_000 : 30_000,
     connectionTimeoutMillis: 10_000,
-    ssl: { rejectUnauthorized: false },
+    ssl: SSL_REQUIS ? { rejectUnauthorized: false } : false,
 });
 
 // Une erreur sur un client inactif ne doit pas faire tomber le processus.
