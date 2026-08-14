@@ -223,3 +223,169 @@ lignes telles que l'œil les perçoit. `git diff --check` signale ce type de bru
 3. Corriger `DEPLOIEMENT.md`, qui ne décrit plus l'architecture réelle.
 4. Docker — backend uniquement : le frontend reste sur Vercel, le containeriser
    serait un exercice sans destination.
+
+---
+
+## 2026-08-13 (suite) — Conteneurisation du backend
+
+### Pourquoi Docker, et pourquoi le backend seulement
+
+L'environnement d'exécution du backend n'existait sous forme reproductible nulle
+part : Node 24 sur la machine locale, Node 20 sur le runner CI, une troisième
+version chez Vercel. Trois reconstitutions différentes du même besoin.
+
+Une image fige cet ensemble dans un artefact unique, identique sur un portable,
+un runner et un serveur AWS. La promesse n'est pas « ça isole », c'est
+« ça reproduit ».
+
+Le frontend est exclu : il tourne sur Vercel, qui gère build et exécution. Le
+containeriser produirait une image que rien ne déploierait. Le backend, lui, a
+une cible réelle — c'est lui qui partira sur AWS, et ECS ne sait déployer que
+des conteneurs.
+
+### Le cache de build gouverne l'ordre des instructions
+
+Une image est un empilement de couches. Docker réutilise une couche si
+l'instruction et tout ce qui la précède sont inchangés. Dès qu'une couche
+change, toutes les suivantes sont reconstruites.
+
+D'où l'ordre : `package.json` + lockfile → `npm ci` → le reste du code. Les
+dépendances changent rarement, le code plusieurs fois par jour. L'inverse
+réinstallerait tout l'arbre npm à chaque modification d'une ligne.
+
+C'est la même logique que le `cache-dependency-path` de la CI.
+
+### `.dockerignore` : la mesure
+
+Premier build sans `.dockerignore` :
+
+| | Sans | Avec |
+|---|---|---|
+| Contexte transféré | 35,99 Mo | 3,75 ko |
+| Durée du build | 26,2 s | 12 s |
+
+Le contexte de build est l'ensemble des fichiers envoyés au démon avant que la
+construction commence — tout le dossier, que le Dockerfile s'en serve ou non.
+
+Sans filtre, `COPY . .` embarquait le `node_modules` de la machine locale
+(macOS, Node 24) et **écrasait** celui que `npm ci --omit=dev` venait
+d'installer pour Linux. Vérifié :
+
+    docker run --rm mymifa-api:dev ls node_modules | grep nodemon
+    nodemon
+
+Une devDependency explicitement exclue à l'installation se retrouvait dans
+l'image. Le `--omit=dev` ne servait à rien.
+
+**Risque de sécurité associé** : un `.env` local, invisible pour Git parce
+qu'ignoré, serait copié dans l'image sans avertissement — et une image se
+pousse dans un registre. Ce vecteur ne déclenche aucune des protections mises
+en place côté Git (secret scanning, push protection), puisque le fichier ne
+passe jamais par Git.
+
+### Répartition du poids de l'image
+
+`docker history` sur une image de 379 Mo :
+
+| Couche | Poids |
+|---|---|
+| Debian bookworm (base) | 85,3 Mo |
+| Installation de Node | 126 Mo |
+| `npm ci --omit=dev` | 74,7 Mo |
+| **Code applicatif** | **287 ko** |
+
+Le code représente 0,08 % de l'image. Réduire le code n'apporterait rien ;
+changer d'image de base apporterait tout. Alpine remplacerait les 85 Mo de
+Debian par environ 8 Mo. À évaluer par la mesure, en vérifiant qu'aucune
+dépendance ne casse sur `musl` au lieu de `glibc`.
+
+### Utilisateur non privilégié
+
+Par défaut, le processus tourne en `root`. Deux raisons de ne pas s'en
+contenter : le `root` du conteneur est le même UID 0 que celui de l'hôte, donc
+une évasion de conteneur donne les pleins pouvoirs sur la machine ; et à
+l'intérieur même du conteneur, une faille d'exécution de code devient une
+compromission complète plutôt qu'un accès limité.
+
+L'image officielle `node` fournit déjà un utilisateur `node` (UID 1000). Points
+d'attention : `USER` s'applique à toutes les instructions suivantes, il doit
+donc venir **après** `npm ci` qui a besoin d'écrire dans `/app` ; et `/app`
+créé par `WORKDIR` appartient à root, d'où le `chown` et les
+`COPY --chown=node:node`.
+
+Vérifié : `docker run --rm mymifa-api:dev id` → `uid=1000(node)`.
+
+Même principe que `permissions: contents: read` sur le GITHUB_TOKEN, et que les
+futurs rôles IAM : on n'accorde que ce qui est nécessaire.
+
+### Ce que Docker a révélé sur l'application
+
+**Effets de bord au chargement des modules.** Le conteneur échouait sur
+`bucket is required` avant même d'atteindre les vérifications de configuration
+d'`index.js`. La trace montrait `Module._compile` → `require` :
+`services/s3.js` construit le client S3 et lit `AWS_S3_BUCKET_NAME` à
+l'import, pas à l'usage.
+
+Conséquences : une variable manquante fait planter l'application entière plutôt
+que la seule fonctionnalité concernée, et tout module important `s3.js` devient
+intestable sans configuration AWS. C'est d'ailleurs pourquoi la suite de tests
+ne couvre que `detection.js`, qui n'a aucun effet de bord.
+
+**`NODE_ENV` gouverne trois comportements.** `EN_PRODUCTION` est calculé depuis
+`NODE_ENV === 'production' || VERCEL === '1'`, et conditionne l'arrêt sur
+configuration incomplète, la vérification CORS, et la tolérance aux origines
+locales. Sans lui, le conteneur démarrait en mode dégradé avec une politique
+CORS plus permissive — pas ce qu'on veut envoyer sur AWS. D'où le
+`ENV NODE_ENV=production` dans le Dockerfile : ce n'est pas un secret, c'est un
+paramètre de comportement, et sa présence dans une couche ne pose aucun
+problème.
+
+**Échéance Node 22.** Le SDK AWS avertit que les versions publiées après la
+première semaine de janvier 2027 exigeront Node >= 22. Node 20 est en
+maintenance, Node 22 est l'LTS active. La montée de version devra bouger
+ensemble sur l'image, la CI et Vercel — sinon on recrée l'écart d'environnements
+que Docker est censé supprimer.
+
+**Arrêt non propre.** Trois `Ctrl + C` ont été nécessaires avant que Docker
+tue le conteneur de force (`got 3 SIGTERM/SIGINTs, forcefully exiting`).
+L'application n'intercepte pas SIGTERM. En production, chaque redéploiement
+coupe les connexions en cours. La forme `CMD ["node", "index.js"]` fait bien de
+Node le PID 1 et lui transmet le signal — c'est une condition nécessaire, pas
+suffisante.
+
+### Vérification de l'image en CI
+
+Un `Dockerfile` qui fonctionne en local ne garantit rien ailleurs — l'inverse
+exact de ce que Docker apporte. Troisième job ajouté :
+
+- `hadolint` valide le Dockerfile sans le construire (aucun avertissement
+  remonté au premier passage)
+- `docker build` vérifie que l'image se construit sur un environnement neuf
+
+Durée mesurée : 18 s, sans cache Docker. L'estimation initiale était de 40 à
+60 s. Le cache (`cache-from`/`cache-to` sur le cache GitHub Actions) a donc été
+écarté : il n'y a pas de gêne à corriger.
+
+Le contexte `Docker — lint & build` a été ajouté au ruleset **avant** le merge,
+selon la même séquence qu'au renommage : la PR qui crée le contexte est celle
+qui débloque le dépôt.
+
+### Constat récurrent sur les estimations
+
+Trois fois dans la journée, une estimation de durée ou de consommation s'est
+révélée trop pessimistique par un facteur 2 à 5 : les minutes du cron
+(2 880 estimées, ~600 réelles), le job backend avec tests (25-35 s estimées,
+13 s réelles), le job Docker (40-60 s estimées, 18 s réelles).
+
+La règle qui en découle : mesurer avant d'optimiser. À trois reprises, le
+problème anticipé n'existait pas.
+
+### Suite
+
+1. `docker compose` avec PostgreSQL — débloque les tests de démarrage et de
+   migrations écartés faute de base.
+2. `actionlint` dans la CI.
+3. Publier l'image sur GHCR — prérequis du déploiement AWS.
+4. Alpine ou build multi-étapes, mesure à l'appui.
+5. Arrêt propre sur SIGTERM.
+6. Montée vers Node 22 (image + CI + Vercel ensemble).
