@@ -6,7 +6,7 @@ services:
   db:
     # Version épinglée sur la majeure : on suit les correctifs, pas les
     # changements de comportement. Alpine suffit largement pour PostgreSQL.
-    image: postgres:16-alpine
+    image: postgres:18-alpine
 
     environment:
       # Identifiants de développement uniquement. Ils n'ouvrent l'accès à rien
@@ -20,10 +20,12 @@ services:
     # le réseau interne de Compose.
     ports:
       - "5432:5432"
-
-    # Sans volume, les données disparaissent à chaque suppression du conteneur.
+      
     volumes:
-      - db_data:/var/lib/postgresql/data
+      # PostgreSQL 18+ range les données dans un sous-dossier nommé par version
+      # majeure. On monte le parent, comme le recommande l'image officielle :
+      # ça permet un futur `pg_upgrade --link` sans franchir de point de montage.
+      - db_data:/var/lib/postgresql
 
     # `depends_on` seul attend que le conteneur soit lancé, pas que la base
     # accepte les connexions. PostgreSQL met quelques secondes à être prêt.

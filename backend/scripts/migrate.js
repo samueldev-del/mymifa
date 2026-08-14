@@ -16,16 +16,23 @@ const run = async () => {
             )
         `);
 
-        const { rows } = await client.query('SELECT nom FROM schema_migrations');
-        const deja = new Set(rows.map((r) => r.nom));
-
         const fichiers = fs
             .readdirSync(MIGRATIONS_DIR)
             .filter((f) => f.endsWith('.sql'))
             .sort();
 
         for (const fichier of fichiers) {
-            if (deja.has(fichier)) {
+            // Le registre est relu a chaque iteration plutot qu'une seule fois
+            // avant la boucle : la migration « baseline » (000) inscrit elle-meme
+            // 001 a 005, puisqu'elle contient deja leur effet. Sans cette relecture,
+            // le script les rejouerait — et 003, qui convertit une colonne deja
+            // convertie, echouerait.
+            const { rows } = await client.query(
+                'SELECT 1 FROM schema_migrations WHERE nom = $1',
+                [fichier],
+            );
+
+            if (rows.length > 0) {
                 console.log(`= ${fichier} (déjà appliquée)`);
                 continue;
             }
@@ -35,7 +42,11 @@ const run = async () => {
             await client.query('BEGIN');
             try {
                 await client.query(sql);
-                await client.query('INSERT INTO schema_migrations (nom) VALUES ($1)', [fichier]);
+                // ON CONFLICT : la baseline a pu inscrire cette migration elle-meme.
+                await client.query(
+                    'INSERT INTO schema_migrations (nom) VALUES ($1) ON CONFLICT (nom) DO NOTHING',
+                    [fichier],
+                );
                 await client.query('COMMIT');
                 console.log(`+ ${fichier} appliquée`);
             } catch (error) {
