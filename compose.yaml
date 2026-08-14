@@ -1,0 +1,61 @@
+# Environnement de développement local : l'API et sa base de données.
+# Rien ici ne va en production — c'est un bac à sable jetable, reconstructible
+# par `docker compose down -v && docker compose up`.
+
+services:
+  db:
+    # Version épinglée sur la majeure : on suit les correctifs, pas les
+    # changements de comportement. Alpine suffit largement pour PostgreSQL.
+    image: postgres:16-alpine
+
+    environment:
+      # Identifiants de développement uniquement. Ils n'ouvrent l'accès à rien
+      # d'autre qu'à un conteneur local et jetable — ce ne sont pas des secrets.
+      POSTGRES_USER: mymifa
+      POSTGRES_PASSWORD: mymifa_dev
+      POSTGRES_DB: mymifa
+
+    # Expose la base sur la machine hôte, pour pouvoir s'y connecter avec psql
+    # ou un client graphique. L'API, elle, n'en a pas besoin : elle passe par
+    # le réseau interne de Compose.
+    ports:
+      - "5432:5432"
+
+    # Sans volume, les données disparaissent à chaque suppression du conteneur.
+    volumes:
+      - db_data:/var/lib/postgresql/data
+
+    # `depends_on` seul attend que le conteneur soit lancé, pas que la base
+    # accepte les connexions. PostgreSQL met quelques secondes à être prêt.
+    # Ce healthcheck permet à l'API d'attendre la disponibilité réelle.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mymifa -d mymifa"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ./backend
+
+    environment:
+      # `db` est le nom du service : Compose le résout via son DNS interne.
+      # Ni localhost (qui désignerait le conteneur lui-même), ni une IP
+      # (qui change à chaque démarrage).
+      DATABASE_URL: postgresql://mymifa:mymifa_dev@db:5432/mymifa
+      ADMIN_PASSWORD: dev_only_password
+      FRONTEND_ORIGIN: http://localhost:3001
+      AWS_S3_BUCKET_NAME: fake-bucket-dev
+      AWS_REGION: eu-central-1
+      PORT: 3000
+
+    ports:
+      - "3000:3000"
+
+    depends_on:
+      db:
+        # Attend que le healthcheck de `db` passe au vert avant de démarrer.
+        condition: service_healthy
+
+volumes:
+  db_data:
