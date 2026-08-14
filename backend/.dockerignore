@@ -1,0 +1,22 @@
+# Dépendances : réinstallées dans l'image par `npm ci`.
+# Les copier écraserait l'installation Linux par celle de la machine locale.
+node_modules
+
+# Historique Git : inutile à l'exécution, et volumineux.
+.git
+.gitignore
+
+# Secrets : ne doivent jamais entrer dans une image.
+# Ils sont injectés à l'exécution, pas à la construction.
+.env
+.env.*
+!.env.example
+
+# Tests : non exécutés en production.
+tests
+
+# Divers
+.DS_Store
+npm-debug.log*
+*.md
+.vercelignore
