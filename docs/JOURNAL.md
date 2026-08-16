@@ -1,560 +1,613 @@
-# Journal DevOps — MyMifa
+# Engineering journal — MyMifa
 
-Ce document trace la construction de la chaîne DevOps de MyMifa : les décisions
-prises, leurs raisons, et ce qui a été appris en chemin. Il complète le code,
-qui dit *quoi*, en documentant le *pourquoi*.
+This document records how the DevOps chain around MyMifa was built: the
+decisions taken, the reasoning behind them, and what was learned along the
+way. It complements the code, which says *what*, by documenting *why*.
 
 ---
 
-## 2026-08-13 — Fondations CI/CD et gouvernance du dépôt
+## 2026-08-13 — CI/CD foundations and repository governance
 
-### Point de départ
+### Starting point
 
-- Monorepo : `frontend/` (Next.js) et `backend/` (API Express), un seul dépôt Git.
-- Deux projets Vercel, déploiement continu déjà actif via l'intégration Git native.
-- Un workflow GitHub Actions préexistant (`sync-emails.yml`, cron de synchronisation).
-- Une PR ouverte contenant un premier pipeline CI couvrant le frontend uniquement.
-- Dépôt privé, `main` sans aucune protection.
+- Monorepo: `frontend/` (Next.js) and `backend/` (Express API), one Git
+  repository.
+- Two Vercel projects, continuous deployment already running through the
+  native Git integration.
+- One pre-existing GitHub Actions workflow (`sync-emails.yml`, the inbox
+  polling cron).
+- An open pull request carrying a first CI pipeline, covering the frontend
+  only.
+- Private repository, `main` unprotected.
 
-### Décisions prises
+### Decisions
 
-**AWS plutôt qu'Azure.** L'application utilise déjà un bucket S3 en `eu-central-1`
-avec un utilisateur IAM dédié. Introduire un second cloud aurait signifié deux jeux
-de credentials, deux modèles d'identité et deux factures, sans bénéfice.
+**AWS rather than Azure.** The application already used an S3 bucket in
+`eu-central-1` with a dedicated IAM user. Introducing a second cloud would
+have meant two sets of credentials, two identity models and two bills, for no
+benefit.
 
-**Protéger `main` avant d'enrichir les tests.** Un pipeline qui ne bloque rien est
-un tableau de bord, pas un garde-fou. Ajouter des vérifications à une CI contournable
-augmente le volume d'information, pas le niveau de garantie.
+**Protect `main` before adding more checks.** A pipeline that blocks nothing
+is a dashboard, not a guardrail. Adding verification to a bypassable CI
+increases the volume of information, not the level of guarantee.
 
-**Dépôt public.** Trois bénéfices : minutes GitHub Actions illimitées, protection de
-branche disponible sans abonnement payant, et travail consultable par un recruteur.
-Décision conditionnée à un audit préalable de l'historique Git.
+**Make the repository public.** Three benefits: unlimited GitHub Actions
+minutes, branch protection without a paid plan, and work a recruiter can
+actually read. Conditional on auditing the Git history first.
 
-**Structure CI : un workflow, deux jobs, sans filtres de chemins.** Les filtres
-auraient économisé quelques minutes, mais un check requis qui ne s'exécute pas ne
-reporte jamais de statut — la PR devient alors impossible à merger. Le coût du piège
-dépassait l'économie.
+**One workflow, two jobs, no path filters.** Filters would have saved a few
+minutes, but a required check that never runs never reports a status — the
+pull request then becomes unmergeable. The cost of that trap outweighed the
+saving.
 
-**Checks bloquants : les deux jobs CI uniquement.** Les trois checks Vercel restent
-visibles mais non bloquants. Ils attestent qu'un déploiement a abouti, pas que le code
-est correct ; l'un d'eux (`Vercel Preview Comments`) ne vérifie rien du tout. Les
-rendre bloquants aurait suspendu les merges à la disponibilité d'un service tiers.
+**Only the two CI checks are blocking.** The three Vercel checks remain
+visible but non-blocking. They attest that a deployment completed, not that
+the code is correct; one of them (`Vercel Preview Comments`) verifies nothing
+at all. Making them required would have gated merges on a third party's
+availability.
 
-**Aucun bypass administrateur.** Une règle contournable par la seule personne
-susceptible de la contourner ne protège rien.
+**No administrator bypass.** A rule that can be bypassed by the only person
+likely to bypass it protects nothing.
 
-### Incidents et diagnostics
+### Incidents and diagnostics
 
-**Le cron ne tourne pas à la fréquence configurée.**
-Hypothèse initiale : `*/15` produit 96 exécutions par jour, soit ~2 880 minutes par
-mois, au-dessus du quota de 2 000 d'un dépôt privé.
-Mesure : 19 exécutions le 12 août au lieu de 96, avec des écarts allant jusqu'à 2h43.
-Cause : GitHub documente que l'événement `schedule` est en « meilleur effort » et peut
-être retardé ou abandonné en période de charge.
-Décision : ne pas corriger — l'application n'a pas encore d'utilisateurs, une latence
-d'une heure est sans conséquence. La parade (planificateur externe appelant
-`workflow_dispatch`) sera traitée à l'étape AWS via EventBridge Scheduler.
+**The cron does not run at its configured frequency.**
 
-**Un `fi` en trop dans un fichier non surveillé.**
-Une modification accidentelle de `sync-emails.yml` — un `fi` orphelin et une fin de
-fichier sans saut de ligne — a failli partir dans un commit destiné à `ci.yml`.
-Ce qui l'a évitée : `git add <fichier>` explicite plutôt que `git add .`.
-Enseignement : le répertoire de travail est partagé entre les branches ; une
-modification non committée suit les changements de branche. On part toujours d'un
-`git status` propre.
+Initial hypothesis: `*/15` produces 96 runs per day, roughly 2,880 minutes per
+month, above the 2,000-minute quota of a private repository.
 
-**Versions d'actions périmées.**
-Le premier pipeline utilisait `actions/checkout@v4` et `actions/setup-node@v4`, alors
-que les majeures actuelles sont `v5` et `v6`. Corrigé après vérification sur les pages
-Releases officielles.
-Enseignement : ne jamais faire confiance à une version de mémoire — vérifier à la
-source, et automatiser la surveillance (Dependabot).
+Measurement: 19 runs on 12 August instead of 96, with gaps up to 2h43.
 
-### Audit de sécurité avant publication
+Cause: GitHub documents the `schedule` event as best-effort — it can be
+delayed, or dropped entirely, during periods of high load.
 
-Trois passes indépendantes sur l'historique complet :
-1. Liste de tous les fichiers ayant existé dans un commit — aucun `.env` réel,
-   seulement des `.env.example` documentaires.
-2. Recherche de motifs de secrets (`AKIA…`, chaînes de connexion, `sk-ant-`,
-   clés privées) — 16 correspondances, toutes des valeurs-gabarits (`user:password@`).
-3. `gitleaks` sur 16 commits — aucun leak.
+Decision: leave it. The application has no users yet, and an hour of latency
+has no consequence. The fix — an external scheduler calling
+`workflow_dispatch` — belongs to the AWS stage, via EventBridge Scheduler.
 
-Enseignement : un outil de détection produit des faux positifs, et c'est l'humain qui
-tranche. Un scanner silencieux sur un projet réel est plus suspect qu'un scanner
-bavard.
+**One `fi` too many, in a file nobody was watching.**
 
-Activation de `secret-scanning` et `secret-scanning-push-protection` : l'audit valide
-le passé, ces options protègent l'avenir en refusant tout push contenant un secret.
+An accidental edit to `sync-emails.yml` — an orphan `fi` and a missing
+trailing newline — nearly went into a commit intended for `ci.yml`.
 
-### Ce qui a été mis en place
+What prevented it: `git add <file>` with an explicit path rather than
+`git add .`.
 
-| Élément | Détail |
+Lesson: the working tree belongs to no branch. An uncommitted change follows
+you across `git switch`. Always start from a clean `git status`.
+
+**Stale action versions.**
+
+The first pipeline used `actions/checkout@v4` and `actions/setup-node@v4`,
+while the current majors are `v5` and `v6`. Corrected after checking the
+official Releases pages.
+
+Lesson: never trust a version from memory. Check the source, and automate the
+watch (Dependabot).
+
+### Security audit before publication
+
+Three independent passes over the full history:
+
+1. Every file ever added to a commit — no real `.env`, only documentary
+   `.env.example` files.
+2. Secret patterns (`AKIA…`, connection strings, `sk-ant-`, private keys) —
+   16 matches, all placeholder values (`user:password@`).
+3. `gitleaks` across 16 commits — no leaks.
+
+Lesson: a detection tool produces false positives, and a human decides. A
+scanner silent on a real project is more suspicious than a noisy one.
+
+`secret-scanning` and `secret-scanning-push-protection` were then enabled: the
+audit validates the past, these options protect the future by rejecting any
+push containing a secret.
+
+### What was put in place
+
+| Item | Detail |
 |---|---|
-| CI frontend | lint + build, cache npm, `timeout-minutes`, `permissions: contents: read` |
-| CI backend | `node --check` sur tous les `.js`, sans installation de dépendances |
-| Concurrency | annulation des runs obsolètes sur PR, jamais sur `main` |
-| Visibilité | dépôt public, historique audité |
-| Protection `main` | ruleset `protect-main` : PR obligatoire, 2 checks requis, ni force-push ni suppression, aucun bypass |
-| Outillage | GitHub CLI (`gh`) — cycle complet en terminal |
+| Frontend CI | lint and build, npm cache, `timeout-minutes`, `permissions: contents: read` |
+| Backend CI | `node --check` over every `.js` file, no dependency install |
+| Concurrency | stale runs cancelled on pull requests, never on `main` |
+| Visibility | public repository, history audited |
+| `main` protection | ruleset `protect-main`: pull request required, 2 required checks, no force-push, no deletion, no bypass |
+| Tooling | GitHub CLI (`gh`) — the full cycle from the terminal |
 
-### Écarts constatés, non encore traités
+### Open gaps, not yet addressed
 
-- `DEPLOIEMENT.md` décrit une architecture qui n'existe plus : `api.mymifa.com`
-  n'est pas attaché (l'API répond sur `mymifa.vercel.app`), l'apex `mymifa.com`
-  n'est rattaché à aucun projet, et les noms de projets Vercel diffèrent de ceux
-  documentés.
-- Un avertissement ESLint non bloquant (`<img>` au lieu de `next/image` dans
-  `PhotoFamille.tsx`) : politique à définir sur les warnings.
-- Aucun linter ni test sur le backend au-delà de la syntaxe.
-- Les workflows eux-mêmes ne sont pas vérifiés (`actionlint`).
-
-### Suite
-
-1. Tests unitaires sur les fonctions pures du backend (`detecterStatut`,
-   `expediteurIgnore`) — les plus critiques et les plus faciles à couvrir.
-2. `actionlint` dans la CI.
-3. Docker.
-4. AWS + Terraform.
+- `DEPLOIEMENT.md` describes an architecture that no longer exists:
+  `api.mymifa.com` was never attached (the API answers on
+  `mymifa.vercel.app`), the apex domain belongs to no project, and the Vercel
+  project names differ from those documented.
+- A non-blocking ESLint warning (`<img>` instead of `next/image` in
+  `PhotoFamille.tsx`): the policy on warnings needs deciding.
+- No linter or test on the backend beyond syntax.
+- The workflows themselves are unverified (`actionlint`).
 
 ---
 
-## 2026-08-13 (suite) — Tests unitaires et durcissement de la CI
+## 2026-08-13 (continued) — Unit tests and CI hardening
 
-### Pourquoi ces fonctions en premier
+### Why these functions first
 
-`services/detection.js` classe les emails de recruteurs par expressions
-régulières. Ce type de code échoue **silencieusement** : un motif trop permissif
-produit un mauvais statut sans exception ni log. On ne s'en aperçoit qu'en
-constatant l'incohérence, des semaines plus tard.
+`services/detection.js` classifies recruiter emails using regular
+expressions. This kind of code **fails silently**: an over-permissive pattern
+produces a wrong status with no exception and no log. It only surfaces when
+someone notices the inconsistency, weeks later.
 
-Ses fonctions sont pures — entrée texte, sortie valeur, aucune base de données,
-aucun réseau. Ce sont donc les moins chères à tester et les plus rentables à
-couvrir. Rapport valeur/effort maximal.
+Its functions are pure — text in, value out, no database, no network. They are
+therefore the cheapest to test and the most profitable to cover.
 
-### Choix de l'outil : `node:test`
+### Choosing the runner: `node:test`
 
-Trois candidats évalués : `node:test` (intégré à Node), Vitest, Jest.
+Three candidates evaluated: `node:test` (built into Node), Vitest, Jest.
 
-Retenu : `node:test`. Le `package.json` du backend n'avait qu'une seule
-devDependency ; ajouter des dizaines de paquets transitifs pour tester deux
-fonctions pures aurait été disproportionné. La syntaxe (`describe`, `test`,
-assertions) est proche de Jest, le transfert de compétence est direct.
+Chosen: `node:test`. The backend's `package.json` had a single devDependency;
+pulling in dozens of transitive packages to test two pure functions would have
+been disproportionate. The syntax (`describe`, `test`, assertions) is close
+enough to Jest that the skill transfers directly.
 
-### Un bug trouvé par les tests
+### A bug found by the tests
 
-Un test sur 24 a échoué au premier lancement.
+One test out of 24 failed on the first run.
 
-    Texte    : "we decided to invite you to an interview next week."
-    Attendu  : entretien
-    Obtenu   : refuse
+```
+Input    : "we decided to invite you to an interview next week."
+Expected : entretien
+Actual   : refuse
+```
 
-Cause : le motif `/we (have )?(decided|regret) (not )?to/i` rendait `not`
-optionnel. Toute phrase contenant « we decided to » était donc classée refus,
-y compris une invitation à un entretien ou une offre.
+Cause: the pattern `/we (have )?(decided|regret) (not )?to/i` made `not`
+optional. Any sentence containing "we decided to" was classified as a
+rejection — including an interview invitation or a job offer.
 
-Le motif mélangeait par ailleurs deux verbes au comportement différent :
-« we regret to » est un refus en soi, « we decided to » ne l'est que suivi de
-« not ». Les traiter ensemble était l'erreur de conception.
+The pattern also merged two verbs that behave differently: "we regret to" is a
+rejection in itself, while "we decided to" only becomes one when followed by
+"not". Treating them together was the design error.
 
-Correction — un motif par verbe :
+Fix — one pattern per verb:
 
-    /we (have )?decided not to/i     (« not » obligatoire)
-    /we regret to/i                  (« not » sans objet)
+```
+/we (have )?decided not to/i     ("not" mandatory)
+/we regret to/i                  ("not" irrelevant)
+```
 
-Un test de non-régression verrouille le comportement, avec un commentaire
-expliquant pourquoi `not` doit rester obligatoire — sans quoi quelqu'un
-remettra le `?` un jour « pour attraper plus de cas ».
+A regression test locks the behaviour in place, with a comment explaining why
+`not` must stay mandatory — otherwise someone will make it optional again to
+"catch more cases".
 
-**Enseignement** : `node --check` validait ce fichier sans réserve. La syntaxe
-était parfaite, la sémantique fausse. Vérifier la forme ne dit rien du
-comportement.
+**Lesson.** `node --check` passed this file without complaint. The syntax was
+perfect and the semantics were wrong. Verifying form says nothing about
+behaviour.
 
-**Enseignement de méthode** : face à l'échec, le premier réflexe a été de
-supposer que la phrase de test était mal écrite. C'est le réflexe le plus
-dangereux du débogage — quand un test échoue, l'hypothèse par défaut n'est
-jamais « les données d'entrée sont mauvaises ». La question à se poser était :
-un recruteur peut-il écrire cette phrase ? Oui, évidemment. Donc le code avait
-tort.
+**Lesson on method.** The first reaction to the failure was to assume the test
+sentence was badly written. That is the most dangerous reflex in debugging —
+when a test fails, the default hypothesis is never "the input data is wrong".
+The question to ask was: can a recruiter write this sentence? Obviously yes.
+So the code was wrong.
 
-### Renommer un status check requis sans bloquer le dépôt
+### Renaming a required status check without locking the repository
 
-Le job backend passait de `Backend — vérification syntaxique` à
-`Backend — syntaxe & tests`. Or ce nom est le **contexte exigé par le ruleset**.
-Merger le renommage sans précaution aurait laissé le ruleset attendre
-indéfiniment un check disparu — toutes les PR bloquées.
+The backend job moved from `Backend — vérification syntaxique` to
+`Backend — syntaxe & tests`. That name is the **context required by the
+ruleset**. Merging the rename without care would have left the ruleset waiting
+forever for a check that no longer exists — every pull request blocked.
 
-Séquence appliquée :
-1. Mise à jour du ruleset **avant** le merge (un contexte n'a pas besoin
-   d'exister pour être déclaré). Toutes les PR deviennent temporairement
-   bloquées.
-2. La PR portant le renommage produit le nouveau contexte, donc se débloque
-   elle-même.
-3. Merge, et l'ancien contexte devient caduc.
+Sequence applied:
 
-### Ce qui a été mis en place
+1. Update the ruleset **before** the merge. A context does not need to exist
+   to be declared. All pull requests become temporarily blocked.
+2. The pull request carrying the rename produces the new context, and
+   therefore unblocks itself.
+3. Merge; the old context becomes irrelevant.
 
-| Élément | Détail |
+### What was put in place
+
+| Item | Detail |
 |---|---|
-| Tests | 25 tests `node:test` sur `detecterStatut` et `expediteurIgnore` |
-| Script | `"test": "node --test"` dans `backend/package.json` |
-| CI backend | `node --check`, puis `npm ci`, puis `npm test` |
-| Ordre des étapes | syntaxe avant installation : un fichier cassé fait échouer le job en quelques secondes plutôt qu'après `npm ci` |
-| Ruleset | contexte mis à jour vers `Backend — syntaxe & tests` |
+| Tests | 25 `node:test` tests over `detecterStatut` and `expediteurIgnore` |
+| Script | `"test": "node --test"` in `backend/package.json` |
+| Backend CI | `node --check`, then `npm ci`, then `npm test` |
+| Step order | syntax before install: a broken file fails the job in seconds rather than after a full `npm ci` |
+| Ruleset | context updated to `Backend — syntaxe & tests` |
 
-Durée mesurée du job backend après ajout des tests : 13 s (estimation initiale :
-25-35 s). `npm ci` sur un backend à une seule devDependency est plus rapide que
-prévu, et le cache npm agit dès le premier run.
+Measured duration of the backend job after adding tests: 13 s, against an
+initial estimate of 25–35 s. `npm ci` on a backend with a single devDependency
+is faster than expected, and the npm cache pays off from the first run.
 
-### Incidents de manipulation Git
+### Git handling incidents
 
-Deux fois dans la session, une modification non committée a suivi un changement
-de branche. Le répertoire de travail n'appartient à aucune branche : il est
-partagé. Le seul moment sûr pour changer de branche est quand `git status` est
-propre.
+Twice in the session, an uncommitted change followed a branch switch. The
+working tree belongs to no branch — it is shared. The only safe moment to
+switch branches is when `git status` is clean.
 
-Un `git diff` affichant deux lignes identiques a révélé un fichier pourtant
-modifié : seul le saut de ligne final manquait. Git compare des octets, pas des
-lignes telles que l'œil les perçoit. `git diff --check` signale ce type de bruit.
-
-### Suite
-
-1. `actionlint` dans la CI — vérifier les workflows eux-mêmes.
-2. Politique sur les warnings ESLint (`<img>` dans `PhotoFamille.tsx`).
-3. Corriger `DEPLOIEMENT.md`, qui ne décrit plus l'architecture réelle.
-4. Docker — backend uniquement : le frontend reste sur Vercel, le containeriser
-   serait un exercice sans destination.
+A `git diff` showing two identical lines revealed a modified file: only the
+trailing newline was missing. Git compares bytes, not lines as the eye reads
+them. `git diff --check` flags this class of noise.
 
 ---
 
-## 2026-08-13 (suite) — Conteneurisation du backend
+## 2026-08-13 (continued) — Containerising the backend
 
-### Pourquoi Docker, et pourquoi le backend seulement
+### Why Docker, and why the backend only
 
-L'environnement d'exécution du backend n'existait sous forme reproductible nulle
-part : Node 24 sur la machine locale, Node 20 sur le runner CI, une troisième
-version chez Vercel. Trois reconstitutions différentes du même besoin.
+The backend's runtime environment existed in reproducible form nowhere: Node
+24 on the local machine, Node 20 on the CI runner, a third version on Vercel.
+Three different reconstructions of the same requirement.
 
-Une image fige cet ensemble dans un artefact unique, identique sur un portable,
-un runner et un serveur AWS. La promesse n'est pas « ça isole », c'est
-« ça reproduit ».
+An image freezes that set into a single artefact, identical on a laptop, a
+runner and an AWS server. The promise is not "it isolates", it is "it
+reproduces".
 
-Le frontend est exclu : il tourne sur Vercel, qui gère build et exécution. Le
-containeriser produirait une image que rien ne déploierait. Le backend, lui, a
-une cible réelle — c'est lui qui partira sur AWS, et ECS ne sait déployer que
-des conteneurs.
+The frontend is excluded: it runs on Vercel, which handles build and
+execution. Containerising it would produce an image nothing would deploy. The
+backend has a real target — it is the one going to AWS, and ECS only knows how
+to deploy containers.
 
-### Le cache de build gouverne l'ordre des instructions
+### The build cache governs instruction order
 
-Une image est un empilement de couches. Docker réutilise une couche si
-l'instruction et tout ce qui la précède sont inchangés. Dès qu'une couche
-change, toutes les suivantes sont reconstruites.
+An image is a stack of layers. Docker reuses a layer when the instruction and
+everything preceding it are unchanged. As soon as one layer changes, every
+subsequent layer is rebuilt.
 
-D'où l'ordre : `package.json` + lockfile → `npm ci` → le reste du code. Les
-dépendances changent rarement, le code plusieurs fois par jour. L'inverse
-réinstallerait tout l'arbre npm à chaque modification d'une ligne.
+Hence the order: `package.json` + lockfile → `npm ci` → the rest of the code.
+Dependencies change rarely, code several times a day. The reverse would
+reinstall the entire npm tree on every one-line edit.
 
-C'est la même logique que le `cache-dependency-path` de la CI.
+Same logic as `cache-dependency-path` in the CI.
 
-### `.dockerignore` : la mesure
+### `.dockerignore`: the measurement
 
-Premier build sans `.dockerignore` :
+First build without a `.dockerignore`:
 
-| | Sans | Avec |
+| | Without | With |
 |---|---|---|
-| Contexte transféré | 35,99 Mo | 3,75 ko |
-| Durée du build | 26,2 s | 12 s |
+| Context transferred | 35.99 MB | 3.75 kB |
+| Build duration | 26.2 s | 12 s |
 
-Le contexte de build est l'ensemble des fichiers envoyés au démon avant que la
-construction commence — tout le dossier, que le Dockerfile s'en serve ou non.
+The build context is the set of files sent to the daemon before construction
+starts — the whole directory, whether the Dockerfile uses it or not.
 
-Sans filtre, `COPY . .` embarquait le `node_modules` de la machine locale
-(macOS, Node 24) et **écrasait** celui que `npm ci --omit=dev` venait
-d'installer pour Linux. Vérifié :
+Without a filter, `COPY . .` pulled in the local machine's `node_modules`
+(macOS, Node 24) and **overwrote** the one `npm ci --omit=dev` had just
+installed for Linux. Verified:
 
-    docker run --rm mymifa-api:dev ls node_modules | grep nodemon
-    nodemon
+```
+docker run --rm mymifa-api:dev ls node_modules | grep nodemon
+nodemon
+```
 
-Une devDependency explicitement exclue à l'installation se retrouvait dans
-l'image. Le `--omit=dev` ne servait à rien.
+A devDependency explicitly excluded at install time ended up in the image. The
+`--omit=dev` achieved nothing.
 
-**Risque de sécurité associé** : un `.env` local, invisible pour Git parce
-qu'ignoré, serait copié dans l'image sans avertissement — et une image se
-pousse dans un registre. Ce vecteur ne déclenche aucune des protections mises
-en place côté Git (secret scanning, push protection), puisque le fichier ne
-passe jamais par Git.
+**Associated security risk**: a local `.env`, invisible to Git because it is
+ignored, would be copied into the image without warning — and images get
+pushed to registries. This vector triggers none of the protections put in
+place on the Git side (secret scanning, push protection), because the file
+never passes through Git.
 
-### Répartition du poids de l'image
+### Where the image weight sits
 
-`docker history` sur une image de 379 Mo :
+`docker history` on a 379 MB image:
 
-| Couche | Poids |
+| Layer | Size |
 |---|---|
-| Debian bookworm (base) | 85,3 Mo |
-| Installation de Node | 126 Mo |
-| `npm ci --omit=dev` | 74,7 Mo |
-| **Code applicatif** | **287 ko** |
+| Debian bookworm (base) | 85.3 MB |
+| Node installation | 126 MB |
+| `npm ci --omit=dev` | 74.7 MB |
+| **Application code** | **287 kB** |
 
-Le code représente 0,08 % de l'image. Réduire le code n'apporterait rien ;
-changer d'image de base apporterait tout. Alpine remplacerait les 85 Mo de
-Debian par environ 8 Mo. À évaluer par la mesure, en vérifiant qu'aucune
-dépendance ne casse sur `musl` au lieu de `glibc`.
+Code accounts for 0.08 % of the image. Reducing the code would achieve
+nothing; changing the base image would achieve everything. Alpine would
+replace Debian's 85 MB with roughly 8 MB. To be evaluated by measurement,
+checking that no dependency breaks on `musl` instead of `glibc`.
 
-### Utilisateur non privilégié
+### Non-privileged user
 
-Par défaut, le processus tourne en `root`. Deux raisons de ne pas s'en
-contenter : le `root` du conteneur est le même UID 0 que celui de l'hôte, donc
-une évasion de conteneur donne les pleins pouvoirs sur la machine ; et à
-l'intérieur même du conteneur, une faille d'exécution de code devient une
-compromission complète plutôt qu'un accès limité.
+By default the process runs as `root`. Two reasons not to accept that: the
+container's `root` is the same UID 0 as the host's, so a container escape
+grants full control of the machine; and inside the container itself, a code
+execution flaw becomes a full compromise rather than limited access.
 
-L'image officielle `node` fournit déjà un utilisateur `node` (UID 1000). Points
-d'attention : `USER` s'applique à toutes les instructions suivantes, il doit
-donc venir **après** `npm ci` qui a besoin d'écrire dans `/app` ; et `/app`
-créé par `WORKDIR` appartient à root, d'où le `chown` et les
+The official `node` image already provides a `node` user (UID 1000). Points to
+watch: `USER` applies to every instruction that follows, so it must come
+**after** `npm ci`, which needs to write to `/app`; and `/app`, created by
+`WORKDIR`, belongs to root — hence the `chown` and the
 `COPY --chown=node:node`.
 
-Vérifié : `docker run --rm mymifa-api:dev id` → `uid=1000(node)`.
+Verified: `docker run --rm mymifa-api:dev id` → `uid=1000(node)`.
 
-Même principe que `permissions: contents: read` sur le GITHUB_TOKEN, et que les
-futurs rôles IAM : on n'accorde que ce qui est nécessaire.
+Same principle as `permissions: contents: read` on the GitHub token, and as
+the future IAM roles: grant only what is necessary.
 
-### Ce que Docker a révélé sur l'application
+### What Docker revealed about the application
 
-**Effets de bord au chargement des modules.** Le conteneur échouait sur
-`bucket is required` avant même d'atteindre les vérifications de configuration
-d'`index.js`. La trace montrait `Module._compile` → `require` :
-`services/s3.js` construit le client S3 et lit `AWS_S3_BUCKET_NAME` à
-l'import, pas à l'usage.
+**Side effects at module load.** The container failed on `bucket is required`
+before even reaching the configuration checks in `index.js`. The stack trace
+showed `Module._compile` → `require`: `services/s3.js` builds the S3 client
+and reads `AWS_S3_BUCKET_NAME` at import time, not at use time.
 
-Conséquences : une variable manquante fait planter l'application entière plutôt
-que la seule fonctionnalité concernée, et tout module important `s3.js` devient
-intestable sans configuration AWS. C'est d'ailleurs pourquoi la suite de tests
-ne couvre que `detection.js`, qui n'a aucun effet de bord.
+Consequences: a missing variable crashes the whole application rather than the
+single feature concerned, and any module importing `s3.js` becomes untestable
+without AWS configuration. That is precisely why the test suite covers only
+`detection.js`, which has no side effects.
 
-**`NODE_ENV` gouverne trois comportements.** `EN_PRODUCTION` est calculé depuis
-`NODE_ENV === 'production' || VERCEL === '1'`, et conditionne l'arrêt sur
-configuration incomplète, la vérification CORS, et la tolérance aux origines
-locales. Sans lui, le conteneur démarrait en mode dégradé avec une politique
-CORS plus permissive — pas ce qu'on veut envoyer sur AWS. D'où le
-`ENV NODE_ENV=production` dans le Dockerfile : ce n'est pas un secret, c'est un
-paramètre de comportement, et sa présence dans une couche ne pose aucun
-problème.
+**`NODE_ENV` governs three behaviours.** `EN_PRODUCTION` is derived from
+`NODE_ENV === 'production' || VERCEL === '1'`, and controls the abort on
+incomplete configuration, the CORS check, and the tolerance for local origins.
+Without it the container started in degraded mode with a looser CORS policy —
+not what should ship to AWS. Hence `ENV NODE_ENV=production` in the
+Dockerfile: it is not a secret, it is a behaviour flag, and its presence in a
+layer poses no problem.
 
-**Échéance Node 22.** Le SDK AWS avertit que les versions publiées après la
-première semaine de janvier 2027 exigeront Node >= 22. Node 20 est en
-maintenance, Node 22 est l'LTS active. La montée de version devra bouger
-ensemble sur l'image, la CI et Vercel — sinon on recrée l'écart d'environnements
-que Docker est censé supprimer.
+**Node 22 deadline.** The AWS SDK warns that versions published after the
+first week of January 2027 will require Node ≥ 22. Node 20 is in maintenance,
+Node 22 is the active LTS. The upgrade must move the image, the CI and Vercel
+together — otherwise it recreates exactly the environment drift Docker is
+meant to remove.
 
-**Arrêt non propre.** Trois `Ctrl + C` ont été nécessaires avant que Docker
-tue le conteneur de force (`got 3 SIGTERM/SIGINTs, forcefully exiting`).
-L'application n'intercepte pas SIGTERM. En production, chaque redéploiement
-coupe les connexions en cours. La forme `CMD ["node", "index.js"]` fait bien de
-Node le PID 1 et lui transmet le signal — c'est une condition nécessaire, pas
-suffisante.
+**Ungraceful shutdown.** Three `Ctrl + C` were needed before Docker killed the
+container by force (`got 3 SIGTERM/SIGINTs, forcefully exiting`). The
+application does not intercept SIGTERM. In production, every redeployment cuts
+in-flight connections. The `CMD ["node", "index.js"]` exec form does make Node
+PID 1 and forwards the signal — a necessary condition, not a sufficient one.
 
-### Vérification de l'image en CI
+### Verifying the image in CI
 
-Un `Dockerfile` qui fonctionne en local ne garantit rien ailleurs — l'inverse
-exact de ce que Docker apporte. Troisième job ajouté :
+A Dockerfile that works locally guarantees nothing elsewhere — the exact
+opposite of what Docker provides. Third job added:
 
-- `hadolint` valide le Dockerfile sans le construire (aucun avertissement
-  remonté au premier passage)
-- `docker build` vérifie que l'image se construit sur un environnement neuf
+- `hadolint` validates the Dockerfile without building it (no warnings raised
+  on the first pass)
+- `docker build` verifies the image builds on a clean environment
 
-Durée mesurée : 18 s, sans cache Docker. L'estimation initiale était de 40 à
-60 s. Le cache (`cache-from`/`cache-to` sur le cache GitHub Actions) a donc été
-écarté : il n'y a pas de gêne à corriger.
+Measured duration: 18 s, without a Docker cache. The initial estimate was
+40–60 s. The cache (`cache-from`/`cache-to` on the GitHub Actions cache) was
+therefore dropped: there is no friction to fix.
 
-Le contexte `Docker — lint & build` a été ajouté au ruleset **avant** le merge,
-selon la même séquence qu'au renommage : la PR qui crée le contexte est celle
-qui débloque le dépôt.
+The `Docker — lint & build` context was added to the ruleset **before** the
+merge, following the same sequence as the rename: the pull request that
+creates the context is the one that unblocks the repository.
 
-### Constat récurrent sur les estimations
+### A recurring pattern in the estimates
 
-Trois fois dans la journée, une estimation de durée ou de consommation s'est
-révélée trop pessimistique par un facteur 2 à 5 : les minutes du cron
-(2 880 estimées, ~600 réelles), le job backend avec tests (25-35 s estimées,
-13 s réelles), le job Docker (40-60 s estimées, 18 s réelles).
+Three times in one day, an estimate of duration or consumption proved too
+pessimistic by a factor of 2 to 5: the cron minutes (2,880 estimated, ~600
+actual), the backend job with tests (25–35 s estimated, 13 s actual), the
+Docker job (40–60 s estimated, 18 s actual).
 
-La règle qui en découle : mesurer avant d'optimiser. À trois reprises, le
-problème anticipé n'existait pas.
-
-### Suite
-
-1. `docker compose` avec PostgreSQL — débloque les tests de démarrage et de
-   migrations écartés faute de base.
-2. `actionlint` dans la CI.
-3. Publier l'image sur GHCR — prérequis du déploiement AWS.
-4. Alpine ou build multi-étapes, mesure à l'appui.
-5. Arrêt propre sur SIGTERM.
-6. Montée vers Node 22 (image + CI + Vercel ensemble).
+The rule that follows: measure before optimising. On three occasions, the
+anticipated problem did not exist.
 
 ---
 
-## 2026-08-14 / 16 — Environnement local et reproductibilité du schéma
+## 2026-08-14 / 16 — Local environment and schema reproducibility
 
-### Compose : pourquoi un nom de service et pas une IP
+### Compose: why a service name and not an IP
 
-Dans un environnement conteneurisé, on adresse les services par leur nom.
-Compose crée un réseau privé avec résolution DNS interne : `db:5432` reste
-valable quelle que soit l'adresse attribuée au conteneur.
+In a containerised environment, services are addressed by name. Compose
+creates a private network with internal DNS resolution: `db:5432` stays valid
+whatever address the container is assigned.
 
-Les deux alternatives sont fautives :
-- une **IP** change à chaque démarrage, il faudrait réécrire la configuration ;
-- **`localhost`** désigne le conteneur lui-même. Chaque conteneur a sa propre
-  pile réseau et sa propre interface loopback — l'API chercherait un PostgreSQL
-  à l'intérieur d'elle-même.
+Both alternatives are wrong:
 
-C'est le mécanisme qu'utilisent aussi Kubernetes et ECS.
+- an **IP** changes on every start, and the configuration would need
+  rewriting;
+- **`localhost`** refers to the container itself. Each container has its own
+  network stack and its own loopback interface — the API would look for a
+  PostgreSQL inside itself.
 
-Nuance apprise plus tard : en CI, les étapes s'exécutent **directement sur le
-runner**, pas dans un conteneur. Le service publie son port sur la machine, et
-on l'atteint par `localhost:5432`. La règle reste cohérente — `localhost`
-désigne toujours « la machine où tourne le code ».
+This is the same mechanism Kubernetes and ECS use.
 
-### Trois pièges de conteneur rencontrés
+Nuance learned later: in CI, steps run **directly on the runner**, not inside a
+container. The service publishes its port on the machine, and it is reached
+through `localhost:5432`. The rule stays consistent — `localhost` always means
+"the machine where the code runs".
 
-**Port déjà alloué.** Un `docker run -p 3000:3000` lancé neuf heures plus tôt
-tournait encore. `--rm` ne supprime le conteneur qu'à l'arrêt du processus, et
-un conteneur ne dépend pas du shell qui l'a lancé. Réflexe : `docker ps` avant
-de se demander pourquoi un port est pris.
+### Three container traps encountered
 
-**Conteneur non recréé.** Après l'échec sur le port, un second `up` a redémarré
-le conteneur existant au lieu de le recréer — Compose réutilise les conteneurs
-tant que leur définition n'a pas changé. La configuration réseau ratée est
-restée. `docker compose ps` le montrait : `3000/tcp` sans flèche, contre
-`0.0.0.0:5432->5432/tcp` pour la base. Corrigé par `--force-recreate`.
+**Port already allocated.** A `docker run -p 3000:3000` started nine hours
+earlier was still running. `--rm` only removes the container when the process
+stops, and a container does not depend on the shell that launched it. Reflex:
+`docker ps` before wondering why a port is taken.
 
-**Arrêt brutal confirmé.** `api-1 exited with code 137` (128 + 9 = SIGKILL)
-contre `db-1 exited with code 0`. PostgreSQL intercepte SIGTERM et s'arrête
-proprement ; l'application ne l'intercepte pas et se fait tuer. Comparaison
-directe entre un service qui se comporte bien et un qui non.
+**Container not recreated.** After the port failure, a second `up` restarted
+the existing container instead of recreating it — Compose reuses containers as
+long as their definition has not changed. The failed network configuration
+persisted. `docker compose ps` showed it: `3000/tcp` with no arrow, against
+`0.0.0.0:5432->5432/tcp` for the database. Fixed with `--force-recreate`.
 
-### SSL codé en dur
+**Ungraceful shutdown confirmed.** `api-1 exited with code 137` (128 + 9 =
+SIGKILL) against `db-1 exited with code 0`. PostgreSQL intercepts SIGTERM and
+shuts down cleanly; the application does not and gets killed. A direct
+comparison between a service that behaves and one that does not.
 
-`config/db.js` forçait `ssl: { rejectUnauthorized: false }` quelle que soit la
-chaîne de connexion. Neon l'exige ; un PostgreSQL local n'a pas de certificat
-et refuse — `The server does not support SSL connections`.
+### Hardcoded TLS
 
-Activé désormais uniquement si `DATABASE_URL` contient `sslmode=require`.
-Vérifié côté Vercel avant merge : la chaîne de production contient bien ce
-paramètre, le comportement en production est inchangé.
+`config/db.js` forced `ssl: { rejectUnauthorized: false }` regardless of the
+connection string. Neon requires it; a local PostgreSQL has no certificate and
+refuses — `The server does not support SSL connections`.
 
-**Leçon de vérification** : la première lecture de la variable Vercel a
-rapporté `channel_binding=require` seulement, ce qui aurait fait renoncer à une
-correction correcte. Une lecture partielle est plus dangereuse qu'une absence
-de lecture. Demander la structure exacte, pas un jugement.
+Now enabled only when `DATABASE_URL` contains `sslmode=require`. Verified on
+Vercel before merging: the production string does carry that parameter, so
+production behaviour is unchanged.
 
-### Le schéma de production n'était versionné nulle part
+**Lesson on verification.** The first reading of the Vercel variable reported
+only `channel_binding=require`, which would have led to abandoning a correct
+fix. A partial reading is more dangerous than no reading at all. Ask for the
+exact structure, not for a judgement.
 
-`npm run migrate` sur une base vierge échouait immédiatement :
+### The production schema was versioned nowhere
+
+`npm run migrate` on an empty database failed immediately:
 `relation "applications" does not exist`.
 
-Cinq tables sur neuf — `applications`, `companies`, `documents`, `interviews`,
-`profil` — avaient été créées à la main dans Neon. Les migrations 001 à 005 ne
-documentaient que les évolutions ultérieures.
+Five of nine tables — `applications`, `companies`, `documents`, `interviews`,
+`profil` — had been created by hand in Neon. Migrations 001 to 005 documented
+only the later changes.
 
-Conséquence : aucun moyen automatisé de reconstruire l'application ailleurs.
-Si la base Neon disparaissait, le schéma était perdu. Point unique de
-défaillance, invisible jusqu'à ce qu'on tente une reconstruction.
+Consequence: no automated way to rebuild the application anywhere else. If the
+Neon database disappeared, the schema was lost. A single point of failure,
+invisible until someone attempted a rebuild.
 
-### Neuf itérations pour extraire une baseline
+### Nine iterations to extract a baseline
 
 | Obstacle | Cause |
 |---|---|
-| `pg_dump` refuse | Neon tourne sur PostgreSQL 18.4, le conteneur local sur 16.13. `pg_dump` refuse un serveur plus récent que lui — il ne saurait pas exprimer les objets d'une version supérieure. |
-| PostgreSQL 18 ne démarre pas | Depuis la 18, les images officielles rangent les données dans un sous-dossier nommé par version majeure. Il faut monter `/var/lib/postgresql`, pas `/data`. |
-| `syntax error at or near "\"` | `pg_dump` produit des méta-commandes `psql` (`\restrict`) que le driver `pg` ne connaît pas. |
-| `function update_modified_column() does not exist` | Deux fonctions trigger au corps identique, une seule extraite. |
-| `relation "public.contacts" does not exist` | Dépendance croisée : le dump partiel de cinq tables contenait une clé étrangère vers une table créée par une migration ultérieure. |
-| `syntax error at end of input`, puis `at or near "ADD"` | Éditions `sed` par numéro de ligne, puis par motif : la suppression par motif s'applique **partout** où le motif apparaît. Trois occurrences supprimées au lieu d'une, laissant des `ADD CONSTRAINT` orphelins. |
-| `relation "schema_migrations" does not exist` | `SELECT pg_catalog.set_config('search_path', '', false)` du dump vidait le `search_path`, et l'effet persistait au-delà du fichier. La table existait, PostgreSQL n'avait plus où la chercher. |
+| `pg_dump` refuses | Neon runs PostgreSQL 18.4, the local container 16.13. `pg_dump` refuses a server newer than itself — it could not express objects from a later version. |
+| PostgreSQL 18 will not start | Since 18, the official images store data in a subdirectory named by major version. The mount must target `/var/lib/postgresql`, not `/data`. |
+| `syntax error at or near "\"` | `pg_dump` emits `psql` meta-commands (`\restrict`) that the `pg` driver does not understand. |
+| `function update_modified_column() does not exist` | Two trigger functions with identical bodies; only one had been extracted. |
+| `relation "public.contacts" does not exist` | Cross dependency: the partial five-table dump contained a foreign key to a table created by a later migration. |
+| `syntax error at end of input`, then `at or near "ADD"` | `sed` edits by line number, then by pattern: a pattern deletion applies **everywhere** the pattern appears. Three occurrences removed instead of one, leaving orphaned `ADD CONSTRAINT` statements. |
+| `relation "schema_migrations" does not exist` | The dump's `SELECT pg_catalog.set_config('search_path', '', false)` emptied the `search_path`, and the effect persisted beyond the file. The table existed; PostgreSQL no longer had anywhere to look for it. |
 
-**Enseignement sur `sed`** : l'édition par numéro de ligne est fragile — les
-numéros changent à chaque modification. L'édition par motif est plus sûre, mais
-il faut compter les occurrences avant de supprimer.
+**Lesson on `sed`.** Editing by line number is fragile — numbers shift with
+every change. Editing by pattern is safer, but the occurrences must be counted
+before deleting.
 
-### La baseline, et l'erreur de conception associée
+### The baseline, and the design error that came with it
 
-`000_schema_initial.sql` n'est pas une étape historique : c'est une
-reconstitution de l'état actuel, extraite par `pg_dump`. Elle contient donc
-déjà l'effet des migrations 001 à 005 — dont 003, qui convertit `questions_ia`
-de TEXT vers JSONB sur une colonne déjà convertie.
+`000_schema_initial.sql` is not a historical step: it is a reconstruction of
+the current state, extracted by `pg_dump`. It therefore already contains the
+effect of migrations 001 to 005 — including 003, which converts
+`questions_ia` from TEXT to JSONB on a column that is already JSONB.
 
-Elle inscrit donc elle-même 001 à 005 dans `schema_migrations`. C'est la
-pratique standard du *squash* / *baseline* quand on introduit un schéma de
-référence dans un projet dont les migrations sont déjà en production.
+It therefore records 001 to 005 in `schema_migrations` itself. This is the
+standard *squash* / *baseline* practice when introducing a reference schema
+into a project whose migrations are already in production.
 
-Cela a imposé une correction de `migrate.js` : le registre était lu **une seule
-fois avant la boucle**, donc les inscriptions faites par la baseline étaient
-invisibles et les migrations rejouées. Il est désormais relu à chaque
-itération, avec `ON CONFLICT (nom) DO NOTHING` sur l'insertion.
+That forced a fix in `migrate.js`: the registry was read **once, before the
+loop**, so entries written by the baseline were invisible and the migrations
+were replayed. It is now re-read on every iteration, with
+`ON CONFLICT (nom) DO NOTHING` on the insert.
 
-**L'erreur** : la baseline a d'abord été construite avec cinq tables seulement,
-pour éviter la duplication avec les migrations qui créent les quatre autres.
-Puis ces migrations ont été marquées appliquées. Résultat : `contacts`,
-`formations`, `relances` et `emails_traites` n'étaient créées nulle part.
+**The error.** The baseline was first built with five tables only, to avoid
+duplicating the migrations that create the other four. Those migrations were
+then marked as applied. Result: `contacts`, `formations`, `relances` and
+`emails_traites` were created nowhere.
 
-Deux décisions cohérentes prises séparément, incohérentes ensemble.
+Two decisions, each coherent on its own, incoherent together.
 
-Et le script affichait `Migrations terminées.` — sur une base à laquelle il
-manquait quatre tables. Seul `\dt` l'a révélé.
+And the script printed `Migrations terminées.` — on a database missing four
+tables. Only `\dt` revealed it.
 
-**Un message de succès n'est pas une preuve de succès.** C'est la leçon
-principale de la session, et elle a directement dicté la forme du job CI.
+**A success message is not proof of success.** That is the main lesson of the
+session, and it directly shaped the CI job.
 
-### Automatisation en CI
+### Automation in CI
 
-Quatrième job : service PostgreSQL 18-alpine démarré par la clé `services:`,
-avec le même healthcheck que `compose.yaml`. Le job applique les migrations sur
-une base vierge, puis **compte les tables** plutôt que de se fier au message du
-script :
+Fourth job: a PostgreSQL 18-alpine service started through the `services:`
+key, with the same healthcheck as `compose.yaml`. The job applies the
+migrations to an empty database, then **counts the tables** rather than
+trusting the script's message:
 
-    nb=$(psql ... "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'")
-    test "$nb" -eq 10
+```
+nb=$(psql ... "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'")
+test "$nb" -eq 10
+```
 
-26 secondes, vert au premier essai. Le cycle exécuté neuf fois à la main est
-désormais automatique.
+26 seconds, green on the first attempt. The cycle run nine times by hand is
+now automatic.
 
-### Une protection décorative pendant plusieurs heures
+### A decorative protection, for several hours
 
-En ajoutant le contexte `Migrations` au ruleset, la relecture a montré **deux**
-contextes au lieu de quatre : `Docker — lint & build`, ajouté plusieurs heures
-plus tôt, n'y avait jamais été enregistré.
+While adding the `Migrations` context to the ruleset, re-reading it showed
+**two** contexts instead of four: `Docker — lint & build`, added hours
+earlier, had never been recorded.
 
-La commande `PUT` avait échoué ou n'avait pas été exécutée, et le pager avalait
-la réponse. Aucun signal. Le dépôt a fonctionné avec un check Docker cru
-bloquant et qui ne l'était pas.
+The `PUT` command had either failed or never run, and the pager swallowed the
+response. No signal. The repository had been operating with a Docker check
+believed to be blocking and which was not.
 
-Trois enseignements :
+Three lessons:
 
-1. **Le pager masque les sorties.** Troisième occurrence de la journée après
-   `gh repo view` et `git diff`. `GH_PAGER=cat` sur toute commande d'écriture,
-   et `git config --global core.pager 'less -FRX'`.
-2. **`PUT` est destructif** : il remplace intégralement la ressource. Une
-   erreur dans le document envoyé ne produit pas une erreur, elle produit un
-   état différent de celui qu'on croit. Même risque qu'un `terraform apply`
-   sur un fichier incomplet.
-3. **Une écriture réussie ne se déduit pas de l'absence d'erreur.** On relit
-   l'état, systématiquement.
+1. **The pager hides output.** Third occurrence in one day, after
+   `gh repo view` and `git diff`. `GH_PAGER=cat` on every write command, and
+   `git config --global core.pager 'less -FRX'`.
+2. **`PUT` is destructive**: it replaces the resource entirely. An error in
+   the document sent does not produce an error, it produces a state different
+   from the one assumed. Same risk as a `terraform apply` on an incomplete
+   file.
+3. **A successful write cannot be inferred from the absence of an error.**
+   Re-read the state, every time.
 
-### État de la chaîne
+---
 
-| Check | Durée | Bloquant |
+## 2026-08-16 — Linting the workflows
+
+### The last unverified artefact
+
+At this point the chain verified the frontend code, the backend code, the
+Dockerfile and the SQL schema. The file orchestrating all of it — `ci.yml` —
+was the only one subject to no verification at all.
+
+Two incidents had already made the case:
+
+- the orphan `fi` in `sync-emails.yml`, which would have broken the email
+  sync;
+- an indentation of one space instead of two in front of a job name, which
+  would have made the workflow invalid.
+
+The second is the more dangerous. **An invalid workflow produces no run at
+all**: no red check, no error message on the pull request, simply nothing. The
+required contexts never appear, the pull request stays blocked, and the
+diagnosis is confusing.
+
+### What `actionlint` catches
+
+Three categories that neither a generic YAML validator nor GitHub itself
+detects:
+
+- workflow syntax: unknown keys, malformed structures, wrong value types;
+- `${{ }}` expressions: non-existent contexts, invalid properties, type
+  errors;
+- the shell inside `run:` blocks, through `shellcheck`.
+
+The third matters most here: the `run:` blocks contain real shell —
+`set -euo pipefail`, `find | xargs`, a `psql` query with a numeric test — that
+nothing else verified.
+
+### Verifying the linter itself
+
+The job passed green on the first run, and `actionlint` reported nothing.
+A green linter on a clean project and a broken linter produce identical
+output, so the tool was tested against a known-bad file:
+
+```
+actionlint /tmp/test-bad.yml
+  "on" section is missing in workflow [syntax-check]
+  shellcheck reported issue in this script: SC2086 [shellcheck]
+```
+
+It detects both the missing `on:` section and a shellcheck finding inside a
+`run:` block. The tool works; the workflows were simply clean.
+
+**Lesson.** A negative test is the only way to distinguish a tool that
+validates everything from a tool that reads nothing. The same reasoning
+applies to any check that has never been seen failing.
+
+### Chain status
+
+Five required checks on `main`, no bypass for anyone including the repository
+owner.
+
+| Check | Duration | Verifies |
 |---|---|---|
-| Frontend — lint & build | ~33 s | oui |
-| Backend — syntaxe & tests | ~12 s | oui |
-| Docker — lint & build | ~16 s | oui |
-| Migrations — reconstruction depuis zéro | ~26 s | oui |
+| Frontend — lint & build | ~35 s | ESLint, Next.js production build |
+| Backend — syntaxe & tests | ~15 s | `node --check` over every file, 25 unit tests |
+| Docker — lint & build | ~18 s | hadolint, image builds on a clean runner |
+| Migrations — reconstruction depuis zéro | ~25 s | Schema rebuilt on an empty database, table count asserted |
+| Workflows — lint | ~13 s | actionlint and shellcheck over the workflow files |
 
-### Suite
+### Next
 
-1. `actionlint` — quatrième rappel : une faute d'indentation dans `ci.yml`
-   (un espace au lieu de deux devant un job) aurait cassé tout le pipeline
-   silencieusement. Rien ne vérifie les workflows.
-2. Publier l'image sur GHCR — prérequis du déploiement AWS.
-3. Test de démarrage de l'application contre la base migrée.
-4. Arrêt propre sur SIGTERM.
-5. Montée vers Node 22 (image + CI + Vercel ensemble).
-6. `DEPLOIEMENT.md`, toujours divergent de l'architecture réelle.
+1. Publish the image to GHCR — a prerequisite for AWS deployment.
+2. AWS and Terraform. First resource identified by measurement: EventBridge
+   Scheduler, to replace the GitHub cron running at 20 % of its configured
+   frequency.
+3. A startup test for the application against the migrated database.
+4. Graceful shutdown on SIGTERM.
+5. Node 22 upgrade — image, CI and Vercel together.
+6. `DEPLOIEMENT.md`, still divergent from the real architecture.
+7. Policy on ESLint warnings.
