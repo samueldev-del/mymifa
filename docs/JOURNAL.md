@@ -389,3 +389,172 @@ problème anticipé n'existait pas.
 4. Alpine ou build multi-étapes, mesure à l'appui.
 5. Arrêt propre sur SIGTERM.
 6. Montée vers Node 22 (image + CI + Vercel ensemble).
+
+---
+
+## 2026-08-14 / 16 — Environnement local et reproductibilité du schéma
+
+### Compose : pourquoi un nom de service et pas une IP
+
+Dans un environnement conteneurisé, on adresse les services par leur nom.
+Compose crée un réseau privé avec résolution DNS interne : `db:5432` reste
+valable quelle que soit l'adresse attribuée au conteneur.
+
+Les deux alternatives sont fautives :
+- une **IP** change à chaque démarrage, il faudrait réécrire la configuration ;
+- **`localhost`** désigne le conteneur lui-même. Chaque conteneur a sa propre
+  pile réseau et sa propre interface loopback — l'API chercherait un PostgreSQL
+  à l'intérieur d'elle-même.
+
+C'est le mécanisme qu'utilisent aussi Kubernetes et ECS.
+
+Nuance apprise plus tard : en CI, les étapes s'exécutent **directement sur le
+runner**, pas dans un conteneur. Le service publie son port sur la machine, et
+on l'atteint par `localhost:5432`. La règle reste cohérente — `localhost`
+désigne toujours « la machine où tourne le code ».
+
+### Trois pièges de conteneur rencontrés
+
+**Port déjà alloué.** Un `docker run -p 3000:3000` lancé neuf heures plus tôt
+tournait encore. `--rm` ne supprime le conteneur qu'à l'arrêt du processus, et
+un conteneur ne dépend pas du shell qui l'a lancé. Réflexe : `docker ps` avant
+de se demander pourquoi un port est pris.
+
+**Conteneur non recréé.** Après l'échec sur le port, un second `up` a redémarré
+le conteneur existant au lieu de le recréer — Compose réutilise les conteneurs
+tant que leur définition n'a pas changé. La configuration réseau ratée est
+restée. `docker compose ps` le montrait : `3000/tcp` sans flèche, contre
+`0.0.0.0:5432->5432/tcp` pour la base. Corrigé par `--force-recreate`.
+
+**Arrêt brutal confirmé.** `api-1 exited with code 137` (128 + 9 = SIGKILL)
+contre `db-1 exited with code 0`. PostgreSQL intercepte SIGTERM et s'arrête
+proprement ; l'application ne l'intercepte pas et se fait tuer. Comparaison
+directe entre un service qui se comporte bien et un qui non.
+
+### SSL codé en dur
+
+`config/db.js` forçait `ssl: { rejectUnauthorized: false }` quelle que soit la
+chaîne de connexion. Neon l'exige ; un PostgreSQL local n'a pas de certificat
+et refuse — `The server does not support SSL connections`.
+
+Activé désormais uniquement si `DATABASE_URL` contient `sslmode=require`.
+Vérifié côté Vercel avant merge : la chaîne de production contient bien ce
+paramètre, le comportement en production est inchangé.
+
+**Leçon de vérification** : la première lecture de la variable Vercel a
+rapporté `channel_binding=require` seulement, ce qui aurait fait renoncer à une
+correction correcte. Une lecture partielle est plus dangereuse qu'une absence
+de lecture. Demander la structure exacte, pas un jugement.
+
+### Le schéma de production n'était versionné nulle part
+
+`npm run migrate` sur une base vierge échouait immédiatement :
+`relation "applications" does not exist`.
+
+Cinq tables sur neuf — `applications`, `companies`, `documents`, `interviews`,
+`profil` — avaient été créées à la main dans Neon. Les migrations 001 à 005 ne
+documentaient que les évolutions ultérieures.
+
+Conséquence : aucun moyen automatisé de reconstruire l'application ailleurs.
+Si la base Neon disparaissait, le schéma était perdu. Point unique de
+défaillance, invisible jusqu'à ce qu'on tente une reconstruction.
+
+### Neuf itérations pour extraire une baseline
+
+| Obstacle | Cause |
+|---|---|
+| `pg_dump` refuse | Neon tourne sur PostgreSQL 18.4, le conteneur local sur 16.13. `pg_dump` refuse un serveur plus récent que lui — il ne saurait pas exprimer les objets d'une version supérieure. |
+| PostgreSQL 18 ne démarre pas | Depuis la 18, les images officielles rangent les données dans un sous-dossier nommé par version majeure. Il faut monter `/var/lib/postgresql`, pas `/data`. |
+| `syntax error at or near "\"` | `pg_dump` produit des méta-commandes `psql` (`\restrict`) que le driver `pg` ne connaît pas. |
+| `function update_modified_column() does not exist` | Deux fonctions trigger au corps identique, une seule extraite. |
+| `relation "public.contacts" does not exist` | Dépendance croisée : le dump partiel de cinq tables contenait une clé étrangère vers une table créée par une migration ultérieure. |
+| `syntax error at end of input`, puis `at or near "ADD"` | Éditions `sed` par numéro de ligne, puis par motif : la suppression par motif s'applique **partout** où le motif apparaît. Trois occurrences supprimées au lieu d'une, laissant des `ADD CONSTRAINT` orphelins. |
+| `relation "schema_migrations" does not exist` | `SELECT pg_catalog.set_config('search_path', '', false)` du dump vidait le `search_path`, et l'effet persistait au-delà du fichier. La table existait, PostgreSQL n'avait plus où la chercher. |
+
+**Enseignement sur `sed`** : l'édition par numéro de ligne est fragile — les
+numéros changent à chaque modification. L'édition par motif est plus sûre, mais
+il faut compter les occurrences avant de supprimer.
+
+### La baseline, et l'erreur de conception associée
+
+`000_schema_initial.sql` n'est pas une étape historique : c'est une
+reconstitution de l'état actuel, extraite par `pg_dump`. Elle contient donc
+déjà l'effet des migrations 001 à 005 — dont 003, qui convertit `questions_ia`
+de TEXT vers JSONB sur une colonne déjà convertie.
+
+Elle inscrit donc elle-même 001 à 005 dans `schema_migrations`. C'est la
+pratique standard du *squash* / *baseline* quand on introduit un schéma de
+référence dans un projet dont les migrations sont déjà en production.
+
+Cela a imposé une correction de `migrate.js` : le registre était lu **une seule
+fois avant la boucle**, donc les inscriptions faites par la baseline étaient
+invisibles et les migrations rejouées. Il est désormais relu à chaque
+itération, avec `ON CONFLICT (nom) DO NOTHING` sur l'insertion.
+
+**L'erreur** : la baseline a d'abord été construite avec cinq tables seulement,
+pour éviter la duplication avec les migrations qui créent les quatre autres.
+Puis ces migrations ont été marquées appliquées. Résultat : `contacts`,
+`formations`, `relances` et `emails_traites` n'étaient créées nulle part.
+
+Deux décisions cohérentes prises séparément, incohérentes ensemble.
+
+Et le script affichait `Migrations terminées.` — sur une base à laquelle il
+manquait quatre tables. Seul `\dt` l'a révélé.
+
+**Un message de succès n'est pas une preuve de succès.** C'est la leçon
+principale de la session, et elle a directement dicté la forme du job CI.
+
+### Automatisation en CI
+
+Quatrième job : service PostgreSQL 18-alpine démarré par la clé `services:`,
+avec le même healthcheck que `compose.yaml`. Le job applique les migrations sur
+une base vierge, puis **compte les tables** plutôt que de se fier au message du
+script :
+
+    nb=$(psql ... "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'")
+    test "$nb" -eq 10
+
+26 secondes, vert au premier essai. Le cycle exécuté neuf fois à la main est
+désormais automatique.
+
+### Une protection décorative pendant plusieurs heures
+
+En ajoutant le contexte `Migrations` au ruleset, la relecture a montré **deux**
+contextes au lieu de quatre : `Docker — lint & build`, ajouté plusieurs heures
+plus tôt, n'y avait jamais été enregistré.
+
+La commande `PUT` avait échoué ou n'avait pas été exécutée, et le pager avalait
+la réponse. Aucun signal. Le dépôt a fonctionné avec un check Docker cru
+bloquant et qui ne l'était pas.
+
+Trois enseignements :
+
+1. **Le pager masque les sorties.** Troisième occurrence de la journée après
+   `gh repo view` et `git diff`. `GH_PAGER=cat` sur toute commande d'écriture,
+   et `git config --global core.pager 'less -FRX'`.
+2. **`PUT` est destructif** : il remplace intégralement la ressource. Une
+   erreur dans le document envoyé ne produit pas une erreur, elle produit un
+   état différent de celui qu'on croit. Même risque qu'un `terraform apply`
+   sur un fichier incomplet.
+3. **Une écriture réussie ne se déduit pas de l'absence d'erreur.** On relit
+   l'état, systématiquement.
+
+### État de la chaîne
+
+| Check | Durée | Bloquant |
+|---|---|---|
+| Frontend — lint & build | ~33 s | oui |
+| Backend — syntaxe & tests | ~12 s | oui |
+| Docker — lint & build | ~16 s | oui |
+| Migrations — reconstruction depuis zéro | ~26 s | oui |
+
+### Suite
+
+1. `actionlint` — quatrième rappel : une faute d'indentation dans `ci.yml`
+   (un espace au lieu de deux devant un job) aurait cassé tout le pipeline
+   silencieusement. Rien ne vérifie les workflows.
+2. Publier l'image sur GHCR — prérequis du déploiement AWS.
+3. Test de démarrage de l'application contre la base migrée.
+4. Arrêt propre sur SIGTERM.
+5. Montée vers Node 22 (image + CI + Vercel ensemble).
+6. `DEPLOIEMENT.md`, toujours divergent de l'architecture réelle.
