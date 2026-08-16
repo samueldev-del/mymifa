@@ -103,3 +103,62 @@ jobs:
       # se construit sur un environnement neuf, hors de la machine locale.
       - name: Build de l'image backend
         run: docker build -t mymifa-api:ci ./backend
+  migrations:
+    name: Migrations — reconstruction depuis zéro
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    services:
+      postgres:
+        # Même version majeure que la production (18.4) et que compose.yaml.
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: mymifa
+          POSTGRES_PASSWORD: mymifa_ci
+          POSTGRES_DB: mymifa
+        ports:
+          - 5432:5432
+        # Le job attend que la base accepte réellement les connexions.
+        options: >-
+          --health-cmd "pg_isready -U mymifa -d mymifa"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      # Le service publie son port sur le runner : les étapes s'exécutent
+      # directement sur la machine, pas dans un conteneur. D'où localhost,
+      # là où compose.yaml utilise le nom de service `db`.
+      # Pas de sslmode : le PostgreSQL du service n'a pas de certificat.
+      - name: Appliquer les migrations sur une base vierge
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://mymifa:mymifa_ci@localhost:5432/mymifa
+        run: npm run migrate
+
+      # Un « Migrations terminées » ne prouve rien : lors de la mise au point,
+      # ce message s'est affiché sur une base à laquelle il manquait 4 tables.
+      # On vérifie donc l'état réel du schéma.
+      - name: Vérifier que les 10 tables existent
+        env:
+          PGPASSWORD: mymifa_ci
+        run: |
+          set -euo pipefail
+          nb=$(psql -h localhost -U mymifa -d mymifa -tAc \
+            "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'")
+          echo "Tables trouvées : $nb"
+          test "$nb" -eq 10       
