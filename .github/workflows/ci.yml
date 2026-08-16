@@ -103,6 +103,22 @@ jobs:
       # se construit sur un environnement neuf, hors de la machine locale.
       - name: Build de l'image backend
         run: docker build -t mymifa-api:ci ./backend
+
+  workflows:
+    name: Workflows — lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # actionlint valide la syntaxe des workflows, les expressions ${{ }},
+      # et le shell des blocs `run:` via shellcheck. Un YAML invalide ne
+      # produit aucun run du tout : ni check rouge, ni message d'erreur.
+      - name: Lint des workflows
+        uses: raven-actions/actionlint@v2
+
   migrations:
     name: Migrations — reconstruction depuis zéro
     runs-on: ubuntu-latest
@@ -161,4 +177,5 @@ jobs:
           nb=$(psql -h localhost -U mymifa -d mymifa -tAc \
             "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'")
           echo "Tables trouvées : $nb"
-          test "$nb" -eq 10       
+          test "$nb" -eq 10    
+             
