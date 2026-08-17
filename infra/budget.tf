@@ -15,8 +15,8 @@ resource "aws_budgets_budget" "monthly_forecast" {
     comparison_operator = "GREATER_THAN"
     # 80 % de 10 $ : on veut être prévenu avant le seuil, pas au moment où
     # il est franchi.
-    threshold                 = 80
-    threshold_type            = "PERCENTAGE"
+    threshold                  = 80
+    threshold_type             = "PERCENTAGE"
     subscriber_email_addresses = ["samueldjommou@icloud.com"]
   }
 
