@@ -1,0 +1,23 @@
+# Le state ne va JAMAIS dans Git : il contient les attributs sensibles
+# en clair. Il vit dans S3, chiffré et versionné.
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Répertoire de travail : providers téléchargés, modules, lock du backend.
+.terraform/
+
+# Fichiers de variables : ils contiennent des valeurs d'environnement,
+# potentiellement sensibles. Seuls les .tfvars d'exemple sont versionnés.
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+
+# Plans binaires : ils contiennent l'intégralité du state.
+*.tfplan
+
+# Fichiers de surcharge locaux.
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
