@@ -177,5 +177,44 @@ jobs:
           nb=$(psql -h localhost -U mymifa -d mymifa -tAc \
             "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'")
           echo "Tables trouvées : $nb"
-          test "$nb" -eq 10    
-             
+          test "$nb" -eq 10
+
+  publish:
+    name: Docker — publish to GHCR
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Uniquement sur main : une image par PR polluerait le registre sans usage,
+    # aucun environnement ne consomme encore ces images.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Ne publie que si l'image se construit et que les tests passent.
+    needs: [backend, docker]
+
+    # Surcharge le `permissions: contents: read` du fichier : ce job seul
+    # a besoin d'écrire dans le registre.
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          # Jeton fourni automatiquement par GitHub, portée limitée au run.
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: true
+          # `latest` pour la commodité, le SHA pour la traçabilité : c'est
+          # lui qu'on déploiera, `latest` ne dit pas ce qui tourne réellement.
+          tags: |
+            ghcr.io/${{ github.repository }}/api:latest
+            ghcr.io/${{ github.repository }}/api:${{ github.sha }}  
+            
