@@ -5,12 +5,14 @@ name: Synchronisation des emails
 # Vercel limite les crons à une exécution par jour, trop lent pour repérer
 # une réponse de recruteur.
 on:
-  schedule:
-    # Toutes les 15 minutes. GitHub applique parfois du retard sur les crons
-    # de dépôts peu actifs ; la synchronisation étant idempotente, un
-    # décalage est sans conséquence.
-    - cron: '*/15 * * * *'
-  # Permet de lancer la synchronisation à la demande depuis l'onglet Actions.
+  # Le déclenchement planifié est passé à EventBridge Scheduler
+  # (infra/scheduler.tf). L'événement `schedule` de GitHub est traité en
+  # « meilleur effort » : mesuré à 19 exécutions par jour au lieu des 96
+  # configurées, avec des écarts allant jusqu'à 2h43. EventBridge tient
+  # les 15 minutes à la seconde près.
+  #
+  # Ce workflow reste déclenchable à la main depuis l'onglet Actions,
+  # en secours si la chaîne AWS tombe.
   workflow_dispatch:
 
 concurrency:
