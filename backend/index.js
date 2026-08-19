@@ -159,11 +159,52 @@ app.use((err, req, res, next) => {
 });
 
 // En serverless, Vercel invoque l'application exportée : ouvrir un port serait
-// inutile. En local, on écoute normalement.
+// inutile. En local et en conteneur, on écoute normalement.
 if (!process.env.VERCEL) {
-    app.listen(port, () => {
+    const server = app.listen(port, () => {
         console.log(`Serveur démarré sur http://localhost:${port}`);
     });
+
+    /**
+     * Arrêt propre.
+     *
+     * Sans ce traitement, le processus ignore SIGTERM et l'orchestrateur le
+     * tue après son délai de grâce — mesuré : `exited with code 137`, soit
+     * 128 + 9 (SIGKILL). Les requêtes en cours sont alors coupées net et les
+     * connexions PostgreSQL restent ouvertes côté serveur jusqu'à expiration.
+     *
+     * `server.close()` cesse d'accepter de nouvelles connexions et attend que
+     * les requêtes en cours se terminent. Le pool est fermé ensuite, pour que
+     * ces requêtes puissent encore l'utiliser.
+     */
+    const arretPropre = (signal) => {
+        console.log(`${signal} reçu, arrêt en cours...`);
+
+        // Garde-fou : un arrêt propre qui ne finit jamais est pire qu'un arrêt
+        // brutal. Docker et ECS accordent 10 secondes par défaut ; on sort de
+        // nous-mêmes avant, avec un code d'erreur qui rend l'incident visible.
+        const minuterie = setTimeout(() => {
+            console.error('Arrêt propre trop long, sortie forcée.');
+            process.exit(1);
+        }, 8000);
+        // N'empêche pas le processus de se terminer si tout va bien.
+        minuterie.unref();
+
+        server.close(async () => {
+            try {
+                await pool.end();
+                console.log('Arrêt propre terminé.');
+                process.exit(0);
+            } catch (error) {
+                console.error('Erreur à la fermeture du pool:', error.message);
+                process.exit(1);
+            }
+        });
+    };
+
+    // SIGTERM : orchestrateur (Docker, ECS). SIGINT : Ctrl+C.
+    process.on('SIGTERM', () => arretPropre('SIGTERM'));
+    process.on('SIGINT', () => arretPropre('SIGINT'));
 }
 
 module.exports = app;
