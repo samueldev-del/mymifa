@@ -217,4 +217,39 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository }}/api:latest
             ghcr.io/${{ github.repository }}/api:${{ github.sha }}  
-            
+  terraform:
+    name: Terraform — fmt & validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          # Alignée sur la contrainte `required_version` de versions.tf.
+          terraform_version: 1.15.8
+          # Sans ce réglage, l'action enveloppe les commandes dans un script
+          # qui masque les codes de sortie : un `fmt -check` en échec
+          # laisserait le job au vert.
+          terraform_wrapper: false
+
+      # Formatage canonique, comme gofmt : évite les diffs pollués par
+      # de l'alignement et les débats d'indentation.
+      - name: Vérifier le formatage
+        working-directory: infra
+        run: terraform fmt -check -recursive -diff
+
+      # `-backend=false` installe le provider sans contacter S3 : ce job
+      # ne lit pas le state et n'a besoin d'aucun credential AWS.
+      - name: Initialiser sans backend
+        working-directory: infra
+        run: terraform init -backend=false
+
+      # Vérifie la cohérence de la configuration : syntaxe, attributs
+      # inconnus, types, références vers des ressources inexistantes.
+      - name: Valider la configuration
+        working-directory: infra
+        run: terraform validate           
