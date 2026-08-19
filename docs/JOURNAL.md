@@ -611,3 +611,226 @@ owner.
 5. Node 22 upgrade — image, CI and Vercel together.
 6. `DEPLOIEMENT.md`, still divergent from the real architecture.
 7. Policy on ESLint warnings.
+
+---
+
+## 2026-08-17 — AWS and Terraform
+
+### Auditing the account before building anything
+
+Nothing was created before knowing what already existed. Four checks:
+
+- **EC2 instances**, in `us-east-1` and `eu-central-1` — none. An instance had
+  been launched for an onboarding credit and correctly terminated.
+- **Secrets Manager** — none. This service bills per secret per month, unlike
+  a terminated EC2 instance which bills nothing.
+- **S3** — one bucket, `mymifa-api-s3`, the application's.
+- **Budgets** — one, at 1 USD.
+
+Nearly everything on AWS is regional. A resource forgotten in a region you
+never open keeps billing without announcing itself. Hence the two-region check
+rather than one.
+
+### The account expires, it does not just get billed
+
+The account runs on the free plan introduced in July 2025: 200 USD of credits,
+six months maximum, whichever comes first. 139.96 USD remain, expiring
+**7 September 2026**.
+
+The wording matters. AWS does not stop charging — it **closes the account**.
+Data is retained for 90 days, and downloading it requires upgrading to a paid
+plan first. After 90 days everything is permanently erased.
+
+That includes `mymifa-api-s3`, which holds the CVs the application depends on.
+
+Upgrading to the paid plan carries **no fixed cost**: no subscription, no
+minimum. Remaining credits keep applying until they expire, twelve months
+after account creation — so upgrading actually extends coverage from September
+to February. One trap: joining an AWS Organization or a Control Tower landing
+zone expires the credits immediately.
+
+Decision: upgrade at the start of September, not before. Nothing is gained by
+upgrading early, and the deadline is now tracked.
+
+### A budget without a forecast is a receipt
+
+The existing budget alerted on `ACTUAL` at 0.01 USD — it fires once the money
+is spent. On an hourly-billed resource, that is days too late.
+
+The first Terraform resource therefore adds a `FORECASTED` notification at
+80 % of a 10 USD monthly budget: AWS projects end-of-month spend and warns
+before the threshold is crossed. A second `ACTUAL` notification at 100 % acts
+as a fallback if the projection is wrong.
+
+The resource is free, disposable, and genuinely useful — chosen deliberately
+as the first exercise of the `init` / `plan` / `apply` cycle rather than
+something artificial.
+
+**A verification detail worth recording.** Querying the existing budget's
+subscribers returned nothing twice, which looked like "no subscriber
+configured". It was a malformed filter: the notification carries a
+`ThresholdType: ABSOLUTE_VALUE` field that the query omitted, so nothing
+matched. Reading the raw structure instead of a filtered view settled it — the
+subscriber existed all along.
+
+Second time in one session that an empty result meant a bad filter rather than
+absent data.
+
+### The state, before any resource
+
+Terraform is declarative: it needs to know what already exists, or it would
+recreate everything on each run. That knowledge lives in the state file, which
+has three consequences:
+
+- **It is the source of truth.** Losing it destroys nothing on AWS, but
+  Terraform no longer recognises its resources — recovery means importing each
+  one by hand.
+- **It contains secrets in clear text.** Any sensitive attribute is written
+  unencrypted. This is the primary reason a state file never goes into Git.
+- **It must be locked.** Two concurrent `apply` runs corrupt it.
+
+Hence: remote backend before the first resource, the same way branch
+protection came before more tests.
+
+### The bootstrap paradox
+
+The bucket storing the state must exist before Terraform starts — but
+Terraform is what creates resources.
+
+Three ways out: create the bucket by hand; create it with Terraform in local
+state then migrate; or a separate bootstrap module. The first was chosen. A
+state bucket is infrastructure-for-infrastructure; managing it with the tool it
+supports creates a circularity that makes destruction awkward for no gain.
+
+The bucket was created with three hardening steps, none of them optional:
+
+| Setting | Why |
+|---|---|
+| Versioning | A corrupted or deleted state can be rolled back. Without it, one bad write permanently destroys the map of the infrastructure. |
+| Encryption at rest (SSE-S3) | The state holds sensitive attributes in clear text. |
+| Public access block, all four flags | Two flags protect against future public ACLs and policies, two neutralise existing ones. An exposed state hands over the full map of the infrastructure. |
+
+### Locking without DynamoDB
+
+State locking historically required a dedicated DynamoDB table. Terraform 1.10
+introduced `use_lockfile`, promoted to generally available in 1.11, which uses
+**S3 conditional writes** instead: a `.tflock` JSON object is created with the
+`If-None-Match` header, so the write only succeeds if the object does not
+already exist. If it does, S3 returns an error and the conflict is avoided.
+
+This is optimistic locking — Terraform defers lock management to the storage
+system. `dynamodb_table` is deprecated as of 1.11.
+
+Not to be confused with S3 Object Lock, a compliance feature preventing
+deletion for a fixed period. No special bucket mode is required.
+
+### Reading a plan
+
+`terraform plan` produced:
+
+```
+Plan: 1 to add, 0 to change, 0 to destroy.
+```
+
+That summary line is the main guardrail. Before every `apply`, it gets checked
+against what was intended. A plan announcing destructions nobody asked for is
+the one signal that prevents an accident — the same role the `+X −Y` counters
+of a Git diff played earlier in the week.
+
+Two details from the output: `(known after apply)` marks values AWS assigns at
+creation time, so a plan is never a complete prediction; and `tags_all` showed
+the provider's `default_tags` propagating automatically, which will later
+distinguish Terraform-managed resources from hand-created ones.
+
+### Idempotence, demonstrated
+
+After `apply`, a second `plan` returned:
+
+```
+No changes. Your infrastructure matches the configuration.
+```
+
+Note the line before it: `Refreshing state...`. Terraform did not just read
+its file — it queried AWS to confirm the resource still exists with the
+expected attributes. Had someone edited the budget in the console, the plan
+would propose restoring it.
+
+This is **drift detection**, and it is what separates a declarative tool from
+a script. A script that creates a budget, run twice, creates two. Terraform
+observes that the desired state is already met and stops.
+
+### The Terraform blind spot
+
+Adding `infra/` created the same gap as every previous artefact: nothing
+verified it. Frontend code, backend code, the Dockerfile, the workflows and
+the SQL schema were all checked; the Terraform was not.
+
+A seventh job adds `terraform fmt -check -recursive` and `terraform validate`.
+Neither needs AWS credentials — `terraform init -backend=false` installs the
+provider without contacting S3, so the job never touches the state.
+
+`terraform_wrapper: false` on the setup action matters: without it, the action
+wraps commands in a script that masks exit codes, and a failing `fmt -check`
+would leave the job green. Precisely the decorative-check problem this whole
+chain exists to avoid.
+
+`terraform plan` is deliberately excluded from CI: it would require AWS
+credentials stored as a secret, with rights to read the state. That belongs to
+its own change, and only becomes worthwhile once the infrastructure is large
+enough for plan review to add value.
+
+### Both linters earned their place immediately
+
+Running the two checks locally before pushing caught two real faults:
+
+- `terraform fmt -check` flagged misaligned attributes in `budget.tf` —
+  written without passing through the formatter.
+- `actionlint` flagged `terraform:` written at column 1 instead of two spaces,
+  which would have placed the job at the workflow root rather than inside
+  `jobs:`.
+
+The second is the dangerous one, and it is the **second occurrence of that
+exact fault** in this project. An invalid workflow produces no run at all: no
+red check, no error message, simply nothing. The required contexts never
+appear and the pull request stays blocked with no visible cause.
+
+The correction itself took three attempts. An editor save that did not take,
+then a `sed` targeting one line by number. `cat -A` settled it by making the
+invisible visible — no character at all before `terraform:`, where two spaces
+were assumed.
+
+### Chain status
+
+| Check | Verifies |
+|---|---|
+| Frontend — lint & build | ESLint, Next.js production build |
+| Backend — syntaxe & tests | `node --check`, 25 unit tests |
+| Docker — lint & build | hadolint, image builds on a clean runner |
+| Migrations — reconstruction depuis zéro | Schema rebuilt on an empty database, table count asserted |
+| Workflows — lint | actionlint and shellcheck |
+| Terraform — fmt & validate | Canonical formatting, configuration validity |
+
+Plus a non-blocking `Docker — publish to GHCR` job, skipped on pull requests
+and running only on `main`. It must never become a required context: a skipped
+job reports no status, and the pull request would block forever.
+
+### AWS state
+
+| Resource | Managed by |
+|---|---|
+| `mymifa-api-s3` | created by hand, production |
+| `mymifa-tfstate-…` | created by hand, versioned, encrypted, private, native locking |
+| Budget 1 USD, ACTUAL | created by hand at signup |
+| Budget 10 USD, FORECASTED | **Terraform** |
+
+### Next
+
+1. EventBridge Scheduler — the first resource born from a measurement rather
+   than an exercise: replacing the GitHub cron that runs at 20 % of its
+   configured frequency.
+2. Decide whether the backend actually migrates to AWS, or whether the
+   infrastructure is built alongside a working Vercel deployment.
+3. Upgrade to the paid plan in early September.
+4. Node 22 upgrade — image, CI and Vercel together.
+5. Graceful shutdown on SIGTERM.
+6. `DEPLOIEMENT.md`, still divergent from the real architecture.
