@@ -149,7 +149,11 @@ const verifierSecret = (req) => {
     const attendu = process.env.EMAIL_WEBHOOK_SECRET;
     if (!attendu) return false;
 
-    const fourni = req.get('x-webhook-secret') || req.query.secret || '';
+    // En-tête uniquement. Le secret était aussi accepté en query string,
+    // ce qui l'exposait : les URL complètes sont journalisées par les
+    // serveurs, les proxys et les CDN, apparaissent dans l'en-tête Referer,
+    // et restent dans l'historique du navigateur.
+    const fourni = req.get('x-webhook-secret') || '';
     const a = crypto.createHash('sha256').update(String(fourni)).digest();
     const b = crypto.createHash('sha256').update(attendu).digest();
     return crypto.timingSafeEqual(a, b);
