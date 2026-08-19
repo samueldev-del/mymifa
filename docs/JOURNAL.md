@@ -834,3 +834,299 @@ job reports no status, and the pull request would block forever.
 4. Node 22 upgrade — image, CI and Vercel together.
 5. Graceful shutdown on SIGTERM.
 6. `DEPLOIEMENT.md`, still divergent from the real architecture.
+
+---
+
+## 2026-08-19 — Container deployment, monitoring, and paying down debt
+
+### ECS Fargate: built, measured, destroyed
+
+The image existed on GHCR but nothing ran it. This deployment exists to
+demonstrate that a container can run on AWS — the application itself stays on
+Vercel, which is free and works.
+
+Nineteen resources: a VPC with two public subnets across two availability
+zones, an internet gateway, a route table, two security groups, an ALB with
+target group and listener, an ECS cluster, a task definition, a service, an
+execution role and a log group.
+
+**Two deliberate trade-offs.**
+
+Tasks run in *public* subnets with a public IP rather than in private subnets
+behind a NAT gateway. The NAT costs around 32 USD a month — disproportionate
+for an ephemeral demonstration. In production the tasks would be private. This
+is a documented compromise, not an oversight.
+
+The task security group accepts traffic **only from the ALB's security group**,
+not from an address range. Even knowing a task's public IP, nothing can reach
+it directly. Referencing a security group is stronger than a CIDR block: it
+follows the resource rather than the network.
+
+**Secrets never touch the state.** `DATABASE_URL`, `ADMIN_PASSWORD` and
+`SESSION_SECRET` are resolved by the ECS agent at task start from SSM. The task
+definition contains only their ARNs. The IAM policy names those three
+parameters and nothing else.
+
+### Two failures worth recording
+
+**Security group descriptions reject apostrophes.** AWS enforces a restricted
+character set on that field — no accents, no apostrophes. The `apply` failed
+after creating fourteen of nineteen resources.
+
+That partial failure demonstrated something useful: Terraform records what it
+created, and the next `apply` planned only the five missing resources. An
+interrupted apply leaves no orphaned infrastructure.
+
+**A wrong secret in SSM.** `EMAIL_WEBHOOK_SECRET` had been copied into
+`/mymifa/database-url`, producing `getaddrinfo ENOTFOUND base` — the
+application looking for a host literally named `base`, from the template
+string.
+
+Third time in two days that copying a value from Vercel by hand cost time. The
+problem is not attention, it is the method: transcribing secrets one at a time
+from a web interface is structurally fragile.
+
+### Measurements
+
+| | |
+|---|---|
+| `/api/health` through the ALB | HTTP 200 in 132 ms |
+| Service | ACTIVE, 1/1 task |
+| ALB target | healthy |
+| Cost | ~0.047 USD/h — Fargate 0.25 vCPU (0.0101) + memory 0.5 GB (0.0022) + public IPv4 (0.005) + ALB (~0.030) |
+
+The public IPv4 charge, introduced in February 2024, was missing from the
+initial estimate. Verified against the pricing page rather than recalled.
+
+### Destroying, and what it teaches
+
+`terraform destroy -target` on the nineteen resources, leaving the scheduler
+and budgets untouched.
+
+Destruction inverts the dependency graph: the ALB before the subnets, the
+subnets before the VPC, the internet gateway last — 7m48s on its own, waiting
+for every network interface to be released. **Tearing down is slower than
+building up**, because each resource waits for its dependents to go first.
+
+Knowing how to destroy matters as much as knowing how to create. Fixed
+per-environment overhead — ALB, NAT, CloudWatch — runs around 90 USD a month
+and keeps billing even when task count drops to zero.
+
+### Separating the ephemeral from the permanent
+
+After destruction, `terraform plan` proposed nineteen creations. That is
+correct behaviour: the code still declares that infrastructure, so Terraform
+wants it to exist.
+
+But permanent noise in a plan eventually masks real drift — the same failure
+mode as a tolerated red check.
+
+`ecs.tf` moved to `infra/demo-ecs/` with its own state, under a separate key in
+the same bucket. Each state now describes a coherent scope, and a plan in one
+says nothing about the other.
+
+A detail worth noting: `ecs.tf` had never been committed when it was applied.
+Nineteen resources existed on AWS with their describing code living only on one
+laptop. Commit before applying, or immediately after.
+
+### The lock, demonstrated by accident
+
+Piping `terraform plan` into `head` closed the stream early, Terraform was
+interrupted, and it never released its lock. The next command failed:
+
+```
+Error acquiring the state lock
+api error PreconditionFailed
+```
+
+This is exactly the native S3 locking mechanism: a `.tflock` object written
+with `If-None-Match`, which S3 refuses when it already exists. Optimistic
+locking, delegated to the storage layer.
+
+`terraform force-unlock <id>` cleared it — safe here, since the holding process
+was dead. Lesson: never truncate Terraform output with `head`.
+
+### Monitoring: two failures, two alarms
+
+The scheduler runs, but nothing would report if it stopped. That was the GitHub
+cron's flaw for weeks — discovered only by going to measure.
+
+**The Lambda fails.** Metric `Errors`, threshold 1 over two 15-minute periods.
+One error may be a network hiccup; two consecutive ones indicate a real
+problem. `treat_missing_data = notBreaching` — no invocation means no error,
+which the other alarm covers.
+
+**The Lambda stops running.** Metric `Invocations`, fewer than one per hour
+when there should be four.
+
+The second is the insidious one: no error is produced, nothing simply happens.
+Hence `treat_missing_data = breaching`. Without it, CloudWatch would treat the
+absence of data as an insufficient state and never fire — precisely the failure
+being watched for.
+
+Both alarms verified against real data: `Invocations = 4.0` over the last hour,
+`Errors = 0.0`. The SNS subscription was confirmed — a topic left in
+`PendingConfirmation` receives messages and notifies nobody.
+
+### Node version drift, found by accident
+
+Vercel runs both projects on **Node 24**. The Docker image and CI ran Node 20.
+
+Nobody had noticed. The container was validating on a version that does not
+serve production — the exact environment gap containerisation is meant to
+eliminate.
+
+The initial plan was to move everything to Node 22, on the assumption that
+Vercel ran Node 20. Checking rather than assuming reversed the direction:
+production dictates the version, not the other way round.
+
+Aligned to 24 across the Dockerfile and all three CI jobs. The Lambda stays on
+`nodejs22.x` — Lambda runtimes do not track Node LTS releases immediately.
+
+### Graceful shutdown
+
+Measured: `api-1 exited with code 137` — 128 + 9, SIGKILL — while PostgreSQL
+exited 0 in the same `docker compose down`.
+
+`server.close()` now stops accepting new connections and waits for in-flight
+requests, then the pool closes in the callback so those requests can still use
+it. An 8-second timer forces exit if shutdown stalls: a graceful shutdown that
+never completes is worse than an abrupt one.
+
+| | Before | After |
+|---|---|---|
+| Exit code | 137 | 0 |
+| Shutdown | 10 s (grace period) | 0.3 s |
+
+Scope note: the block only runs outside serverless. On Vercel the application
+is invoked without a persistent HTTP server. This fixes the container, not
+production.
+
+### The secret in the query string
+
+`verifierSecret` accepted the shared secret from the URL as well as the header.
+A secret in a query string is an exposed secret: full URLs are logged by
+servers, proxies and CDNs, appear in the `Referer` header, and persist in
+browser history.
+
+Verified before removing it that no caller used that path.
+
+**The first test proved nothing.** Both routes returned 401 — but for the wrong
+reason: `compose.yaml` never defined `EMAIL_WEBHOOK_SECRET`, so `verifierSecret`
+returned false regardless of input. The route had been untestable locally all
+along.
+
+After adding a development value: header returns 503 (authentication passed,
+the route runs and fails later on IMAP), query string returns 401. **Two
+distinct codes for two distinct paths** — that is what makes the test
+conclusive.
+
+A negative test only has value when the positive case is verified alongside it.
+Otherwise it proves that something fails, not that the right thing fails for
+the right reason.
+
+### The warning nobody was going to fix
+
+One ESLint warning appeared on every CI run for two days — `<img>` instead of
+`<Image />` — without ever failing the job. The rule is set to `warn`, so the
+command exits 0.
+
+A signal that constrains nothing gets ignored. That is the whole argument
+behind every blocking check in this pipeline, demonstrated on a small scale.
+
+The project had exactly one warning, which made `--max-warnings=0` free to
+adopt. At twenty it would have been a cleanup project.
+
+Migrating to `<Image fill />` moved the aspect ratio from the image to the
+`<figure>`, which needed `relative`. `sizes` was added — with `fill`, Next
+otherwise assumes 100vw and serves an oversized image, the opposite of the
+intended optimisation.
+
+**And the browser found something the linter could not.** Opening the page
+surfaced a Next.js notice: the image is the page's Largest Contentful Paint, so
+lazy loading delays the very element that measures perceived performance.
+`priority` fixes it.
+
+Neither ESLint nor CI reports this. Only loading the page does.
+
+### Documentation drift, quantified
+
+`DEPLOIEMENT.md` was a setup guide — "the projects still need creating" — for
+infrastructure that had existed for a long time. And it described an
+architecture that never existed:
+
+| Documented | Actual |
+|---|---|
+| `mymifa-frontend` / `mymifa-api` | `mymifa-fwry` / `mymifa` |
+| `api.mymifa.com` | `mymifa.vercel.app` |
+| `mymifa.com` | `www.mymifa.com` |
+| `NEXT_PUBLIC_API_URL = https://api.mymifa.com/api` | `https://mymifa.vercel.app/api` |
+| `FRONTEND_ORIGIN = https://mymifa.com` | `https://www.mymifa.com` |
+
+Five discrepancies out of five verifiable points.
+
+The real values were established at the source rather than from the file: the
+API URL through the browser's network tab, the CORS origin through an `OPTIONS`
+preflight against the API.
+
+This drift had a cost — on day one it led to a wrong diagnosis about a deleted
+Vercel project.
+
+Replaced by `docs/DEPLOYMENT.md`: an operational reference rather than a guide.
+What runs where, which variables each project expects, and how to intervene —
+secret rotation, diagnosing a stopped sync, rebuilding the schema, bringing the
+ECS demo up and down.
+
+### A decision not to optimise
+
+The image is 379 MB: 85 MB of Debian, 126 MB of Node, 75 MB of dependencies,
+and **287 kB of application code** — 0.08 %.
+
+Alpine would replace Debian's 85 MB with roughly 8 MB. It was considered and
+declined.
+
+The gain is theoretical: this image is deployed nowhere, it serves local
+development and an ephemeral demonstration, both of which cache layers. The
+risk is real: Alpine uses `musl` instead of `glibc`, and also differs in DNS
+resolution and timezone handling — subtle differences that surface in
+production rather than in testing.
+
+Deciding not to optimise, on the basis of a measurement, is worth more than
+optimising by reflex. Three times across these two days a pessimistic estimate
+proved wrong and the anticipated problem did not exist.
+
+### Chain status
+
+Six blocking checks on `main`, no bypass:
+
+| Check | Verifies |
+|---|---|
+| Frontend — lint & build | ESLint with `--max-warnings=0`, Next.js production build |
+| Backend — syntaxe & tests | `node --check`, 25 unit tests |
+| Docker — lint & build | hadolint, image builds on a clean runner |
+| Migrations — reconstruction depuis zéro | Schema rebuilt on an empty database, table count asserted |
+| Workflows — lint | actionlint and shellcheck |
+| Terraform — fmt & validate | Canonical formatting, configuration validity |
+
+Plus a non-blocking `Docker — publish to GHCR`, running on `main` only.
+
+**AWS, permanent:**
+
+```
+EventBridge Scheduler ──► Lambda ──► API MyMifa
+    rate(15 minutes)      Node 22    /api/emails/sync
+                             │
+                    CloudWatch alarms ──► SNS ──► email
+```
+
+### Remaining
+
+1. Upgrade the AWS account to the paid plan before 7 September — otherwise the
+   account closes and its contents are erased after 90 days, including the S3
+   bucket holding the CVs.
+2. No staging environment. Vercel preview deployments run against the
+   production database.
+3. Nothing keeps local `.env` files and Vercel variables aligned. They have
+   diverged at least once.
+4. `api.mymifa.com` is still not attached; the API answers on a domain outside
+   our control.
