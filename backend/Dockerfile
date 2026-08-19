@@ -1,6 +1,7 @@
-# Image de base : Debian allégé avec Node 20 préinstallé.
-# Même version majeure que la CI et que Vercel, pour éviter les écarts.
-FROM node:20-slim
+# Image de base : Debian allégé avec Node 24 préinstallé.
+# Alignée sur Vercel, qui exécute l'API en Node 24 : valider sur une autre
+# version reviendrait à tester ce qui ne tourne pas en production.
+FROM node:24-slim
 
 # Répertoire de travail à l'intérieur du conteneur.
 # Créé automatiquement s'il n'existe pas.
