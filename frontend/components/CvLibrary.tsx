@@ -45,6 +45,11 @@ export default function CvLibrary() {
     e.preventDefault();
     if (!fichier) return;
 
+    // Référence capturée avant le await : React remet `currentTarget` à null
+    // dès la fin du traitement de l'évènement, et l'appeler ensuite lève
+    // « Cannot read properties of null » alors que l'envoi a réussi.
+    const formulaire = e.currentTarget;
+
     setIsUploading(true);
 
     const formData = new FormData();
@@ -55,7 +60,7 @@ export default function CvLibrary() {
       await apiFetch<CvItem>('/cv', { method: 'POST', body: formData });
       setFichier(null);
       setLibelle('');
-      e.currentTarget.reset();
+      formulaire.reset();
       toast.success(t('profil.bibliotheque.ajoute'));
       await fetchCvs();
     } catch (error: unknown) {
