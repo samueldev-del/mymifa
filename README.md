@@ -24,6 +24,7 @@ engineering practices built around it.
 - [Local development](#local-development)
 - [Database migrations](#database-migrations)
 - [Deployment](#deployment)
+- [Infrastructure](#infrastructure)
 - [Security](#security)
 - [Engineering notes](#engineering-notes)
 - [Known limitations](#known-limitations)
@@ -158,6 +159,8 @@ frontend/
   i18n/            DE / EN / FR dictionaries
   lib/             API client, auth, routing
   public/          Icons, service worker, offline shell
+infra/             Terraform: EventBridge schedule, Lambda, alarms, budget
+  lambda/          Function source, packaged by Terraform
 compose.yaml       Local environment: API + PostgreSQL
 docs/JOURNAL.md    Engineering decisions, incidents, measurements
 .github/workflows/ CI pipeline and scheduled email sync
@@ -291,8 +294,10 @@ handled explicitly.
 ### IMAP
 
 `getMailboxLock('INBOX', { readOnly: true })` — no flags modified, nothing
-moved or deleted. Triggered every 15 minutes by GitHub Actions, since the
-Vercel Hobby plan allows one cron per day, or manually from the dashboard.
+moved or deleted. Triggered every 15 minutes by EventBridge Scheduler (see
+[Infrastructure](#infrastructure)), or manually from the dashboard. The
+GitHub Actions workflow that used to carry the schedule is still there, but
+`workflow_dispatch` only — a manual fallback if the AWS chain goes down.
 
 ---
 
@@ -319,7 +324,7 @@ when `FRONTEND_ORIGIN` or `DATABASE_URL` are missing.
 
 ## CI/CD
 
-Five required status checks on `main`, no bypass for anyone including the
+Six required status checks on `main`, no bypass for anyone including the
 repository owner. Direct pushes are rejected; every change goes through a
 pull request.
 
@@ -330,6 +335,7 @@ pull request.
 | Docker — lint & build | hadolint, then the image builds on a clean runner | ~18 s |
 | Migrations — reconstruction depuis zéro | Migrations run against an empty PostgreSQL service, table count asserted | ~25 s |
 | Workflows — lint | actionlint and shellcheck over the workflow files | ~13 s |
+| Terraform — fmt & validate | `terraform fmt -check` and `terraform validate` over `infra/` | ~18 s |
 
 Jobs run in parallel. Cheap checks run before expensive ones inside a job —
 `node --check` before `npm ci`, hadolint before `docker build` — so a broken
@@ -407,6 +413,56 @@ directory:
 
 The backend is also published as a Docker image, built and verified on every
 pull request.
+
+---
+
+## Infrastructure
+
+Everything under `infra/` is Terraform. The configuration is the source of
+truth, not the console: state lives in S3, encrypted, with native S3
+lockfiles rather than the DynamoDB table deprecated since Terraform 1.11.
+Every managed resource is tagged `Project=mymifa, ManagedBy=terraform`, so
+what the code owns is distinguishable from what was created by hand.
+
+### Why the scheduler moved off GitHub Actions
+
+GitHub treats the `schedule` event as best effort. Measured over a month,
+the sync ran **19 times a day instead of the 96 configured**, with gaps of
+up to **2h43** — with no error raised, because nothing was failing. It
+simply was not running.
+
+EventBridge Scheduler replaced it, with `flexible_time_window` set to `OFF`,
+since punctuality is the entire point of the change:
+
+```
+EventBridge Scheduler --(IAM role)--> Lambda --HTTP--> MyMifa API
+```
+
+The Lambda is packaged by Terraform from source, so a code change
+redeploys on its hash. Its role carries `AWSLambdaBasicExecutionRole` plus
+`ssm:GetParameter` scoped to the single parameter it reads — no `ssm:*`, no
+`Resource = "*"`. The webhook secret is read as a data source rather than
+declared as a resource, which would have written its value into the state
+file. Log retention is set to 14 days; left unset, CloudWatch keeps logs
+forever and bills for them.
+
+### Two alarms for two different failures
+
+| Alarm | Metric | Fires when |
+|---|---|---|
+| `mymifa-sync-emails-erreurs` | `Errors` | Two failures within 30 minutes — one can be a network hiccup |
+| `mymifa-sync-emails-silencieuse` | `Invocations` | No invocation for an hour, when there should have been four |
+
+The second is the one naive monitoring misses. With no invocations
+CloudWatch receives no data at all, so the default `treat_missing_data`
+would leave the alarm in `INSUFFICIENT_DATA` and never fire — precisely the
+failure being watched for. It is set to `breaching` instead. The first alarm
+takes the opposite setting, `notBreaching`: no invocation means no error,
+so missing data is not a signal there.
+
+Both notify an SNS topic that emails. A `FORECASTED` budget alarm at 80% of
+$10/month completes the set, so a runaway resource is caught on projection
+rather than after it has billed.
 
 ---
 
